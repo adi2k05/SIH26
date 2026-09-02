@@ -3,7 +3,6 @@ import pandas as pd
 from datetime import datetime
 
 def calculate_apix():
-    # 1. DGCA Passenger Traffic Weights (Hackathon Estimates)
     route_weights = {
         'DEL-BOM': 0.30,
         'BLR-DEL': 0.20,
@@ -13,7 +12,6 @@ def calculate_apix():
         'Other':   0.10
     }
     
-    # 2. Advance-Purchase Window Weights
     window_weights = {
         1: 0.10,
         7: 0.25,
@@ -25,7 +23,6 @@ def calculate_apix():
     print("Connecting to database...")
     conn = sqlite3.connect('airfare_index.db')
     
-    # Load data into Pandas
     df = pd.read_sql_query("SELECT * FROM raw_fares", conn)
     
     if df.empty:
@@ -33,23 +30,19 @@ def calculate_apix():
         conn.close()
         return
 
-    # Fix: Explicitly cast extracted_fare from TEXT to numeric
-    df['extracted_fare'] = pd.to_numeric(df['extracted_fare'], errors='coerce')
-    df = df.dropna(subset=['extracted_fare'])
+    # Update: Group by the new 'total_fare' column
+    df['total_fare'] = pd.to_numeric(df['total_fare'], errors='coerce')
+    df = df.dropna(subset=['total_fare'])
+    median_fares = df.groupby(['route', 'advance_window_days'])['total_fare'].median().reset_index()
 
-    # 3. Calculate Median Fare per Route and Window
-    median_fares = df.groupby(['route', 'advance_window_days'])['extracted_fare'].median().reset_index()
-
-    print("\n--- MEDIAN FARES ---")
+    print("\n--- MEDIAN TOTAL FARES (Base + Tax) ---")
     print(median_fares)
 
-    # 4. Calculate the Weighted APIx
     apix_total = 0
-    
     for _, row in median_fares.iterrows():
         route = row['route']
         window = int(row['advance_window_days'])
-        fare = float(row['extracted_fare'])
+        fare = float(row['total_fare'])
         
         r_weight = route_weights.get(route, route_weights['Other'])
         w_weight = window_weights.get(window, 0)
@@ -61,7 +54,6 @@ def calculate_apix():
     
     print(f"\n✅ Calculated Daily APIx for {today_date}: ₹ {final_apix}")
 
-    # 5. Save Calculated Index to daily_index table
     cursor = conn.cursor()
     cursor.execute('''
         INSERT INTO daily_index (date, route, apix_value)

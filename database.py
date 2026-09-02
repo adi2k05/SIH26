@@ -1,11 +1,10 @@
 import sqlite3
 
 def setup_database():
-    # This automatically creates a file named 'airfare_index.db' in your folder
     conn = sqlite3.connect('airfare_index.db')
     cursor = conn.cursor()
 
-    # Table 1: Stores the raw quotes exactly as the scraper finds them
+    # Updated MoSPI Compliant Schema
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS raw_fares (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -13,11 +12,12 @@ def setup_database():
         airline TEXT,
         route TEXT,
         advance_window_days INTEGER,
-        extracted_fare TEXT
+        base_fare REAL,
+        taxes_fees REAL,
+        total_fare REAL
     )
     ''')
 
-    # Table 2: Stores the final calculated Airfare Price Index (APIx) for the dashboard
     cursor.execute('''
     CREATE TABLE IF NOT EXISTS daily_index (
         date DATE DEFAULT (date('now', 'localtime')),
@@ -28,7 +28,7 @@ def setup_database():
 
     conn.commit()
     conn.close()
-    print("Database created successfully! Tables are ready.")
+    print("MoSPI-Compliant Database created successfully!")
 
 if __name__ == "__main__":
     setup_database()

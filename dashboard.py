@@ -23,26 +23,34 @@ if not daily_index.empty:
     col1, col2, col3 = st.columns(3)
     col1.metric(label="Calculated Daily APIx", value=f"₹ {latest_apix:,.2f}")
     col2.metric(label="Sectors Monitored", value="DEL-BOM")
-    col3.metric(label="Advance Window", value="T+7 Days")
+    col3.metric(label="Total Fares Scraped", value=f"{len(raw_fares)} records")
 else:
     st.warning("No index calculated yet.")
 
 st.divider()
 
 if not raw_fares.empty:
-    st.subheader("Raw Scraped Fares (DEL-BOM, T+7)")
+    # Create an interactive dropdown filter for the judges
+    available_windows = sorted(raw_fares['advance_window_days'].unique())
+    selected_window = st.selectbox("Select Advance Purchase Window to Inspect:", available_windows, format_func=lambda x: f"T+{x} Days")
     
+    # Filter the dataframe based on the dropdown selection
+    filtered_df = raw_fares[raw_fares['advance_window_days'] == selected_window]
+
+    st.subheader(f"Raw Scraped Fares (DEL-BOM, T+{selected_window})")
+    
+    # Dynamic Plotly Chart
     fig = px.strip(
-        raw_fares, 
+        filtered_df, 
         x="airline", 
-        y="extracted_fare", 
+        y="total_fare", 
         color="airline", 
-        title="Observed Ticket Price Distribution",
-        labels={"extracted_fare": "Ticket Price (₹)", "airline": "Carrier"}
+        title=f"Ticket Price Distribution (T+{selected_window})",
+        labels={"total_fare": "Total Ticket Price (₹)", "airline": "Carrier"}
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Database Records (SQLite)")
-    st.dataframe(raw_fares[['timestamp', 'airline', 'route', 'extracted_fare']], use_container_width=True)
+    st.subheader("Database Records: MoSPI-Compliant Breakdown")
+    st.dataframe(filtered_df[['timestamp', 'airline', 'route', 'advance_window_days', 'base_fare', 'taxes_fees', 'total_fare']], use_container_width=True)
 else:
     st.info("No raw fare records found in the database.")
