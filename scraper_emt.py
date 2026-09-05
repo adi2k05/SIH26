@@ -40,7 +40,17 @@ def run_scraper():
                 
                 try:
                     page.goto(url, timeout=60000)
-                    page.wait_for_timeout(10000) 
+                    
+                    print("Waiting dynamically for EaseMyTrip flights to render...")
+                    for attempt in range(15):
+                        current_text = page.locator("body").inner_text()
+                        if "₹" in current_text or "Rs" in current_text:
+                            print(f"-> Flights loaded in ~{attempt + 1} seconds!")
+                            break
+                        page.wait_for_timeout(1000)
+                    
+                    page.evaluate("window.scrollBy(0, 1000)")
+                    page.wait_for_timeout(2000) 
                     
                     page_text = page.locator("body").inner_text()
                     lines = [line.strip() for line in page_text.split('\n') if line.strip()]
@@ -76,7 +86,7 @@ def run_scraper():
                     conn.commit()
                     conn.close()
                     print(f"✅ Saved {inserted_count} records")
-                                    
+                                              
                 except Exception as e:
                     print(f"Extraction error for {route} T+{window}:", e)
                 

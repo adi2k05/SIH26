@@ -1,56 +1,73 @@
 import streamlit as st
-import sqlite3
+import requests
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(page_title="MoSPI Airfare Price Index (APIx)", layout="wide")
-st.title("✈️ Real-time Airfare Price Index (APIx) Dashboard")
-st.markdown("Developed for MoSPI | Tracking Domestic Airfare Inflation")
+# UI Configuration
+st.set_page_config(page_title="MoSPI Airfare Index", layout="wide")
+st.title("✈️ MoSPI Airfare Index (APIx) Monitor")
+st.write("Real-time monitoring of OTA markup variances against direct factory pricing.")
 
-@st.cache_data(ttl=30)
-def load_data():
-    conn = sqlite3.connect('airfare_index.db')
-    raw_df = pd.read_sql_query("SELECT * FROM raw_fares", conn)
-    index_df = pd.read_sql_query("SELECT * FROM daily_index", conn)
-    conn.close()
-    return raw_df, index_df
+API_URL = "http://localhost:8000"
 
-raw_fares, daily_index = load_data()
-
-if not daily_index.empty:
-    latest_apix = daily_index.iloc[-1]['apix_value']
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric(label="Calculated Daily APIx", value=f"₹ {latest_apix:,.2f}")
-    col2.metric(label="Sectors Monitored", value="DEL-BOM")
-    col3.metric(label="Total Fares Scraped", value=f"{len(raw_fares)} records")
-else:
-    st.warning("No index calculated yet.")
+# Interactive Filters
+col1, col2 = st.columns(2)
+with col1:
+    route = st.selectbox(
+        "Select Route", 
+        ["DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL", "BOM-BLR", "BLR-BOM", "DEL-HYD", "HYD-DEL"]
+    )
+with col2:
+    window = st.selectbox("Advance Purchase Window (Days)", [1, 7, 15, 30, 45], index=1)
 
 st.divider()
 
-if not raw_fares.empty:
-    # Create an interactive dropdown filter for the judges
-    available_windows = sorted(raw_fares['advance_window_days'].unique())
-    selected_window = st.selectbox("Select Advance Purchase Window to Inspect:", available_windows, format_func=lambda x: f"T+{x} Days")
+# Visualization: Cross-Portal Variance
+st.markdown("**OTA Markup vs. Direct Airline Pricing**")
+try:
+    response = requests.get(f"{API_URL}/api/fares/compare?route={route}&window={window}")
     
-    # Filter the dataframe based on the dropdown selection
-    filtered_df = raw_fares[raw_fares['advance_window_days'] == selected_window]
+    if response.status_code == 200 and "comparisons" in response.json():
+        df_compare = pd.DataFrame(response.json()["comparisons"])
+        
+        if not df_compare.empty:
+            # Grouped Bar Chart to show direct comparisons
+            fig = px.bar(
+                df_compare, 
+                x="airline", 
+                y="lowest_fare", 
+                color="ota_source",
+                barmode="group",
+                text="lowest_fare",
+                labels={"lowest_fare": "Lowest Fare (₹)", "airline": "Airline Fleet", "ota_source": "Booking Portal"},
+                color_discrete_sequence=px.colors.qualitative.Pastel
+            )
+            fig.update_traces(textposition='outside')
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # Raw Data Expander
+            with st.expander("View Raw Comparison Data"):
+                st.dataframe(df_compare, use_container_width=True)
+        else:
+            st.info(f"Awaiting scraper data for {route} at T+{window}.")
+    else:
+        st.error("Failed to fetch data. Ensure FastAPI is running.")
+except requests.exceptions.ConnectionError:
+    st.error("Backend offline. Run 'python api_service.py' in a separate terminal.")
 
-    st.subheader(f"Raw Scraped Fares (DEL-BOM, T+{selected_window})")
-    
-    # Dynamic Plotly Chart
-    fig = px.strip(
-        filtered_df, 
-        x="airline", 
-        y="total_fare", 
-        color="airline", 
-        title=f"Ticket Price Distribution (T+{selected_window})",
-        labels={"total_fare": "Total Ticket Price (₹)", "airline": "Carrier"}
-    )
-    st.plotly_chart(fig, use_container_width=True)
+st.divider()
 
-    st.subheader("Database Records: MoSPI-Compliant Breakdown")
-    st.dataframe(filtered_df[['timestamp', 'airline', 'route', 'advance_window_days', 'base_fare', 'taxes_fees', 'total_fare']], use_container_width=True)
-else:
-    st.info("No raw fare records found in the database.")
+# Macro View: System-Wide Matrix
+st.markdown("**System-Wide Route Matrix (24h Average Fares)**")
+try:
+    res_matrix = requests.get(f"{API_URL}/api/fares/matrix")
+    if res_matrix.status_code == 200 and "matrix" in res_matrix.json():
+        df_matrix = pd.DataFrame(res_matrix.json()["matrix"])
+        
+        if not df_matrix.empty:
+            # Pivot the data to create a clean matrix (Routes as rows, Windows as columns)
+            pivot_df = df_matrix.pivot(index="route", columns="window", values="median_price").round(0)
+            pivot_df.columns = [f"T+{col} Days" for col in pivot_df.columns]
+            st.dataframe(pivot_df.style.highlight_min(axis=1, color="lightgreen"), use_container_width=True)
+except Exception:
+    st.warning("Matrix data unavailable.")
