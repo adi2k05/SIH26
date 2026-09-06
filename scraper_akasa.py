@@ -28,13 +28,32 @@ def run_akasa_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Akasa Air Scraper (Resilient Retry Mode)...")
+    # HARDCODED EXCLUSIONS
+    # Akasa Air operates at Manohar International (GOX), not Dabolim (GOI).
+    unsupported_akasa_routes = [
+        "DEL-GOI", "BOM-GOI"
+    ]
+    
+    print("Launching Akasa Air Scraper (Bulletproof Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
 
         for route in top_20_routes:
             origin, dest = route.split("-")
+            
+            # --- BYPASS NON-OPERATED ROUTES INSTANTLY ---
+            if route in unsupported_akasa_routes:
+                print(f"ℹ️ {route} is unsupported by Akasa (uses GOX instead of GOI). Skipping permanently.")
+                for window in advance_windows:
+                    if not is_already_scraped(route, window, "Akasa Direct"):
+                        with sqlite3.connect('airfare_index.db') as conn:
+                            conn.execute('''
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                                VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                            ''', ("Akasa Air", route, window, "Akasa Direct"))
+                            conn.commit()
+                continue
             
             for window in advance_windows:
                 if is_already_scraped(route, window, "Akasa Direct"):
@@ -67,7 +86,7 @@ def run_akasa_scraper():
                         }}''', origin)
                         
                         if not origin_found:
-                            raise Exception(f"Origin {origin} not selectable in dropdown.")
+                            raise Exception(f"Origin {origin} not selectable in dropdown. Retrying...")
                         
                         page.wait_for_timeout(2500)
                         
@@ -86,15 +105,9 @@ def run_akasa_scraper():
                         }}''', dest)
                         
                         if not dest_found:
-                            print(f"ℹ️ Akasa does not operate flights between {origin} and {dest}.")
-                            with sqlite3.connect('airfare_index.db') as conn:
-                                conn.execute('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?)
-                                ''', ("Akasa Air", route, window, "Akasa Direct"))
-                                conn.commit()
-                            context.close()
-                            break
+                            # --- CRITICAL FIX: Treat as UI Lag ---
+                            # Do NOT insert NULL. Throw exception to retry the attempt.
+                            raise Exception(f"Destination {dest} not selectable in dropdown. Retrying...")
                                 
                         page.wait_for_timeout(1500)
                         
@@ -157,6 +170,18 @@ def run_akasa_scraper():
                         for _ in range(30):
                             try:
                                 body_text = page.locator("body").inner_text()
+                                # Log NULL safely only if the results page explicitly states no flights
+                                if "no flights" in body_text.lower() or "sold out" in body_text.lower():
+                                    with sqlite3.connect('airfare_index.db') as conn:
+                                        conn.execute('''
+                                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                                            VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                                        ''', ("Akasa Air", route, window, "Akasa Direct"))
+                                        conn.commit()
+                                    print(f"ℹ️ Akasa officially returned no flights for T+{window}. Logging NULL.")
+                                    flights_loaded = "EMPTY"
+                                    break
+                                
                                 if body_text.count("₹") > 4 or body_text.count("Rs") > 4:
                                     flights_loaded = True
                                     break
@@ -166,6 +191,10 @@ def run_akasa_scraper():
                             
                         if not flights_loaded:
                             raise Exception("Flight results failed to render.")
+                            
+                        if flights_loaded == "EMPTY":
+                            context.close()
+                            break
                         
                         lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
                         fares = [int(re.sub(r'[^\d]', '', l)) for l in lines if ('₹' in l or 'Rs' in l) and re.sub(r'[^\d]', '', l)]
