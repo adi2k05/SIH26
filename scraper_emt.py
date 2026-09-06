@@ -4,8 +4,11 @@ from datetime import datetime, timedelta
 import sqlite3
 import re
 import time
+import os
 
 def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
         c.execute("""
@@ -49,16 +52,13 @@ def run_emt_scraper():
                 date_str = future_date_obj.strftime("%d/%m/%Y")
                 print(f"\n--- EaseMyTrip Scraping: {route} | T+{window} Days ({date_str}) ---")
                 
-                # Up to 2 attempts per route-window
                 for attempt in range(1, 3):
                     page = context.new_page()
                     try:
                         url = f"https://flight.easemytrip.com/FlightList/Index?srch={origin}-{city_map[origin]}-India|{dest}-{city_map[dest]}-India|{date_str}&px=1-0-0&cbn=0&ar=undefined&isSplit=false&isOneway=true&isFreeFlight=false"
                         
-                        # FIX: Use domcontentloaded instead of full load to prevent socket closing
                         page.goto(url, wait_until="domcontentloaded", timeout=45000)
                         
-                        # Wait for flight rows to anchor
                         flights_loaded = False
                         for _ in range(25):
                             body_text = page.locator("body").inner_text()

@@ -4,8 +4,11 @@ from datetime import datetime, timedelta
 import sqlite3
 import re
 import time
+import os
 
 def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
         c.execute("""
@@ -56,7 +59,6 @@ def run_spicejet_scraper():
                             try:
                                 body_text = page.locator("body").inner_text()
                                 
-                                # THE FIX: Match the exact text from the SpiceJet UI
                                 if "Unfortunately, there are no flights available" in body_text or "no flights available" in body_text.lower():
                                     no_flights_scheduled = True
                                     break
@@ -72,6 +74,12 @@ def run_spicejet_scraper():
                         
                         if no_flights_scheduled:
                             print(f"ℹ️ SpiceJet does not operate flights on {route} for T+{window}.")
+                            with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                                ''', ("SpiceJet", route, window, "SpiceJet Direct"))
+                                conn.commit()
                             page.close()
                             break
 

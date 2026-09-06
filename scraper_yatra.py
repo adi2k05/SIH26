@@ -4,8 +4,11 @@ from datetime import datetime, timedelta
 import sqlite3
 import re
 import time
+import os
 
 def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
         c.execute("""
@@ -31,7 +34,6 @@ def run_yatra_scraper():
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
 
-        # FIX FOR T+1 FIRST RECORD: Warm up session & Akamai verification first
         print("Initializing Yatra gateway session...")
         warmup = context.new_page()
         try:

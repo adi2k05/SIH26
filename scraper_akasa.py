@@ -4,8 +4,11 @@ from datetime import datetime, timedelta
 import sqlite3
 import re
 import time
+import os
 
 def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
         c.execute("""
@@ -49,7 +52,6 @@ def run_akasa_scraper():
                         page.goto("https://www.akasaair.com/", wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(3500) 
                         
-                        # 1. Origin Input
                         loc_from = page.locator("#From")
                         loc_from.click(force=True)
                         page.wait_for_timeout(500)
@@ -69,7 +71,6 @@ def run_akasa_scraper():
                         
                         page.wait_for_timeout(2500)
                         
-                        # 2. Destination Input
                         loc_to = page.locator("#To")
                         loc_to.click(force=True)
                         page.wait_for_timeout(500)
@@ -86,12 +87,17 @@ def run_akasa_scraper():
                         
                         if not dest_found:
                             print(f"ℹ️ Akasa does not operate flights between {origin} and {dest}.")
+                            with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                                ''', ("Akasa Air", route, window, "Akasa Direct"))
+                                conn.commit()
                             context.close()
                             break
                                 
                         page.wait_for_timeout(1500)
                         
-                        # 3. Calendar
                         page.get_by_placeholder(re.compile(r"Departure date", re.I)).click(force=True)
                         page.wait_for_timeout(1500)
                         
@@ -145,7 +151,6 @@ def run_akasa_scraper():
                         page.evaluate(js_click_logic)
                         page.wait_for_timeout(1000)
                         
-                        # 4. Search
                         page.get_by_text("Search Flights").first.click(force=True)
                         
                         flights_loaded = False
