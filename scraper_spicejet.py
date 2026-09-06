@@ -15,75 +15,90 @@ def run_spicejet_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print(f"Launching SpiceJet Direct Scraper for {len(top_20_routes)} routes...")
+    print("Launching SpiceJet Multi-Route Scraper (Dynamic Polling Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
-        page = context.new_page()
-
+        context = browser.new_context(viewport={"width": 1920, "height": 1080})
+        
         for route in top_20_routes:
             origin, dest = route.split("-")
             
             for window in advance_windows:
-                # SpiceJet requires YYYY-MM-DD for the URL parameter
-                spicejet_date = (datetime.now() + timedelta(days=window)).strftime("%Y-%m-%d")
-                search_url = f"https://www.spicejet.com/search?from={origin}&to={dest}&tripType=1&departure={spicejet_date}&adult=1&child=0&srCitizen=0&infant=0&currency=INR&redirectTo=/"
+                future_date_obj = datetime.now() + timedelta(days=window)
+                date_str = future_date_obj.strftime("%Y-%m-%d")
 
-                print(f"\n--- SpiceJet Scraping: {route} | T+{window} Days ({spicejet_date}) ---")
+                print(f"\n--- SpiceJet Scraping: {route} | T+{window} Days ({date_str}) ---")
+                
+                page = context.new_page() 
                 
                 try:
-                    page.goto(search_url, timeout=60000)
+                    url = f"https://www.spicejet.com/search?from={origin}&to={dest}&tripType=1&departure={date_str}&adult=1&child=0&srCitizen=0&infant=0&currency=INR"
+                    page.goto(url, timeout=60000)
                     
-                    print("Waiting dynamically for SpiceJet flights to render...")
+                    flights_loaded = False
                     
-                    # --- Dynamic Polling: Checks every 1 second, up to 15 seconds ---
-                    for attempt in range(15):
-                        current_text = page.locator("body").inner_text()
-                        if "₹" in current_text or "Rs" in current_text:
-                            print(f"-> Flights loaded in ~{attempt + 1} seconds!")
-                            break
-                        page.wait_for_timeout(1000) 
+                    # Dynamic Polling Loop to survive React State Hydration reloads
+                    for _ in range(40):
+                        try:
+                            body_text = page.locator("body").inner_text()
+                            if "₹" in body_text or "Rs" in body_text:
+                                # Ensure we aren't just seeing the footer currency selector
+                                if "Flight Details" in body_text or "SpiceMax" in body_text or len(re.findall(r'₹', body_text)) > 3:
+                                    flights_loaded = True
+                                    break
+                        except Exception as e:
+                            if "Execution context was destroyed" in str(e) or "Target page" in str(e) or "detached" in str(e):
+                                page.wait_for_timeout(1500)
+                                continue
+                        
+                        page.wait_for_timeout(1000)
                     
-                    page.evaluate("window.scrollBy(0, 1000)")
+                    if not flights_loaded:
+                        print("⚠️ Timeout: Flights did not render.")
+                        continue
+                        
+                    # Mandatory DOM stabilization before JS execution
+                    page.wait_for_timeout(3000)
+                    
+                    try:
+                        page.evaluate("window.scrollBy(0, 1500)")
+                    except Exception:
+                        page.wait_for_timeout(2000)
+                        
                     page.wait_for_timeout(2000)
                     
-                    page_text = page.locator("body").inner_text()
-                    lines = [line.strip() for line in page_text.split('\n') if line.strip()]
+                    # Extract & Clean Data
+                    lines = [line.strip() for line in page.locator("body").inner_text().split('\n') if line.strip()]
                     
-                    conn = sqlite3.connect('airfare_index.db')
-                    cursor = conn.cursor()
-                    inserted_count = 0
-                    
-                    for i, line in enumerate(lines):
-                        if "₹" in line or "Rs" in line:
-                            clean_text = line.replace("₹", "").replace("Rs", "").replace(",", "").strip()
-                            
-                            if re.match(r'^\d{4,5}$', clean_text):
-                                total_fare = int(clean_text)
+                    fares = []
+                    for line in lines:
+                        if '₹' in line or 'Rs' in line:
+                            clean_text = re.sub(r'[^\d]', '', line)
+                            if clean_text:
+                                fares.append(int(clean_text))
                                 
-                                if 1500 < total_fare < 75000:
-                                    base_fare = round(total_fare * 0.85, 2)
-                                    taxes_fees = round(total_fare * 0.15, 2)
-                                    
-                                    cursor.execute('''
-                                        INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                                    ''', ("SpiceJet", route, window, base_fare, taxes_fees, total_fare, "SpiceJet Direct"))
-                                    
-                                    inserted_count += 1
+                    valid_fares = [f for f in fares if 1500 < f < 75000]
                     
-                    conn.commit()
-                    conn.close()
-                    print(f"✅ Saved {inserted_count} records")
-                                              
+                    # Bulk Insert
+                    if valid_fares:
+                        with sqlite3.connect('airfare_index.db') as conn:
+                            conn.executemany('''
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                                VALUES (?, ?, ?, ?, ?, ?, ?)
+                            ''', [("SpiceJet", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "SpiceJet Direct") for f in valid_fares])
+                            conn.commit()
+                        print(f"✅ Saved {len(valid_fares)} direct records.")
+                    else:
+                        print("⚠️ No valid fares found.")
+                                    
                 except Exception as e:
-                    print(f"Extraction error for {route} T+{window}:", e)
+                    print(f"❌ Extraction error: {e}")
                 
-                time.sleep(5)
+                finally:
+                    page.close()
+                
+                time.sleep(2)
 
         browser.close()
         print("\nSpiceJet Multi-Route Scraping Complete!")
