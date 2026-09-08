@@ -292,7 +292,7 @@ DOCUMENTATION_HTML = """
 import pandas as pd
 
 # 1. Fetch data from the live API
-url = "https://prism-case-manor.ngrok-free.app/api/fares/raw?hours_back=24"
+url = "https://mospi-apix-api.onrender.com/api/fares/raw?hours_back=24"
 response = requests.get(url).json()
 
 # 2. Parse into DataFrame
