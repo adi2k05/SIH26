@@ -308,7 +308,7 @@ else:
                     <div style="margin-top: 16px;">
                         <h3>cURL (For Terminal Testing)</h3>
                         <div class="code-block">
-<pre>curl -X GET "https://prism-case-manor.ngrok-free.app/api/fares/compare?route=DEL-BOM&window=7" \
+<pre>curl -X GET "https://mospi-apix-api.onrender.com/api/fares/compare?route=DEL-BOM&window=7" \
      -H "Accept: application/json"</pre>
                         </div>
                     </div>
