@@ -38,15 +38,21 @@ def run_pipeline():
     if today_count > 0:
         print(f"ℹ️  Last recorded scrape: {last_ts} IST")
         choice = input(
-            f"Data already exists for today ({today_count} records). Force a full re-scrape? (y/n): "
+            f"Data already exists for today ({today_count} records). Force full re-scrape (y), Exit (n), or Recheck missing gaps (r)? (y/n/r): "
         ).strip().lower()
 
-        if choice != "y":
+        if choice == "n":
             print(f"Data is already scraped for today ({today_ist}). Total records collected: {today_count}.")
             return
-        
-        print("⚠️  Force mode enabled. Bypassing checkpoints for initial sweep...")
-        os.environ["FORCE_RESCRAPE"] = "1"
+        elif choice == "r":
+            print("🔄 Recheck mode enabled. Scanning database and scraping only missing routes...")
+            os.environ["FORCE_RESCRAPE"] = "0"
+        elif choice == "y":
+            print("⚠️  Force mode enabled. Bypassing checkpoints for a complete overwrite...")
+            os.environ["FORCE_RESCRAPE"] = "1"
+        else:
+            print("Invalid input. Exiting for safety.")
+            return
     else:
         print(f"No records found for today ({today_ist}). Starting daily data collection...")
         os.environ["FORCE_RESCRAPE"] = "0"
@@ -56,7 +62,7 @@ def run_pipeline():
         "scraper_yatra.py",
         "scraper_spicejet.py",
         "scraper_akasa.py",
-        "scraper_ct.py"
+        "scraper_cmt.py"
     ]
 
     total_passes = 3
