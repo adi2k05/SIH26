@@ -115,12 +115,6 @@ def run_cmt_scraper():
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', current_batch)
-                        if current_batch:
-                            with sqlite3.connect('airfare_index.db') as conn:
-                                conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ''', current_batch)
                                 conn.commit()
                             print(f"✅ Saved {len(current_batch)} records (Attempt {attempt}).")
                             page.close()
