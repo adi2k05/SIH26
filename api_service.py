@@ -461,7 +461,7 @@ def get_documentation():
 
 @app.get("/api/fares/raw")
 def get_raw_fares(hours_back: int = Query(24, description="Lookback hours")):
-    q = '''SELECT timestamp, airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source
+    q = '''SELECT timestamp, airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time
            FROM raw_fares 
            WHERE timestamp >= datetime('now', ?) 
            AND total_fare IS NOT NULL
