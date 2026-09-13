@@ -262,7 +262,7 @@ DOCUMENTATION_HTML = """
                 <div class="meta-box">
                     <div class="meta-item">
                         <small>Data Sources</small>
-                        <span>Akasa, SpiceJet, Yatra, EMT</span>
+                        <span>Akasa Air, SpiceJet, Yatra, EaseMyTrip, Air India, ClearTrip</span>
                     </div>
                     <div class="meta-item">
                         <small>Coverage</small>
@@ -357,7 +357,8 @@ else:
       "base_fare": 4650.0,
       "taxes_fees": 820.5,
       "total_fare": 5470.5,
-      "ota_source": "EaseMyTrip"
+      "ota_source": "EaseMyTrip",
+      "departure_time": "T1"
     }
   ]
 }</pre>
