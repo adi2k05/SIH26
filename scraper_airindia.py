@@ -132,9 +132,9 @@ def run_airindia_scraper():
 
                         with sqlite3.connect('airfare_index.db') as conn:
                             conn.execute('''
-                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                VALUES (?, ?, ?, ?, ?, ?, ?)
-                            ''', ("Air India", route, window, base_fare, taxes_fees, total_fare, "Air India Direct"))
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', ("Air India", route, window, base_fare, taxes_fees, total_fare, "Air India Direct" ,"T1"))
                             conn.commit()
 
                         print(f"✅ Saved Air India record for ₹{total_fare} (Attempt {attempt}).")

@@ -270,7 +270,7 @@ DOCUMENTATION_HTML = """
                     </div>
                     <div class="meta-item">
                         <small>Active Base URL</small>
-                        <code>https://prism-case-manor.ngrok-free.app</code>
+                        <code>https://mospi-apix-api.onrender.com</code>
                     </div>
                 </div>
             </section>

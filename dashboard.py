@@ -85,7 +85,7 @@ with tab_heatmap:
 
 with tab_raw:
     st.subheader("Filtered Records")
-    display_cols = ['timestamp_ist', 'route', 'advance_window_days', 'airline', 'ota_source', 'base_fare', 'taxes_fees', 'total_fare']
+    display_cols = ['timestamp_ist', 'route', 'advance_window_days', 'airline', 'ota_source', 'base_fare', 'taxes_fees', 'total_fare','departure_time']
     available_cols = [c for c in display_cols if c in df.columns]
     
     st.dataframe(df[available_cols].sort_values('timestamp_ist', ascending=False), use_container_width=True)

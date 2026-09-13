@@ -49,8 +49,8 @@ def run_akasa_scraper():
                     if not is_already_scraped(route, window, "Akasa Direct"):
                         with sqlite3.connect('airfare_index.db') as conn:
                             conn.execute('''
-                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL)
                             ''', ("Akasa Air", route, window, "Akasa Direct"))
                             conn.commit()
                 continue
@@ -174,8 +174,8 @@ def run_akasa_scraper():
                                 if "no flights" in body_text.lower() or "sold out" in body_text.lower():
                                     with sqlite3.connect('airfare_index.db') as conn:
                                         conn.execute('''
-                                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                            VALUES (?, ?, ?, NULL, NULL, NULL, ?)
+                                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                            VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL)
                                         ''', ("Akasa Air", route, window, "Akasa Direct"))
                                         conn.commit()
                                     print(f"ℹ️ Akasa officially returned no flights for T+{window}. Logging NULL.")
@@ -203,9 +203,9 @@ def run_akasa_scraper():
                         if valid_fares:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ''', [("Akasa Air", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Akasa Direct") for f in valid_fares])
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', [("Akasa Air", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Akasa Direct", f"T{idx+1}") for idx, f in enumerate(valid_fares)])
                                 conn.commit()
                             print(f"✅ Saved {len(valid_fares)} direct records (Attempt {attempt}).")
                             context.close()

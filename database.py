@@ -15,6 +15,7 @@ def setup_database():
         base_fare REAL,
         taxes_fees REAL,
         total_fare REAL
+        departure_time TEXT,
     )
     ''')
 

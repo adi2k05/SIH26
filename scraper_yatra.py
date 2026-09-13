@@ -96,9 +96,9 @@ def run_yatra_scraper():
                         if valid_fares:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                                ''', [("Yatra Partner", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Yatra") for f in valid_fares])
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', [("Yatra Partner", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Yatra", f"T{idx+1}") for idx, f in enumerate(valid_fares)])  
                                 conn.commit()
                             print(f"✅ Saved {len(valid_fares)} records (Attempt {attempt}).")
                             page.close()

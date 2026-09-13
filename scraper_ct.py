@@ -97,17 +97,24 @@ def run_cmt_scraper():
                                     airline_name = line
                                     break
 
-                            # Structure formatted for executemany tuple mapping
+                          # Structure formatted for executemany tuple mapping
                             current_batch.append((
                                 airline_name,
                                 route,
                                 window,
-                                0.0,  # Base Fare (imputed downstream)
-                                0.0,  # Taxes (imputed downstream)
+                                round(total_fare * 0.85, 2),
+                                round(total_fare * 0.15, 2),
                                 total_fare,
-                                "Cleartrip"
+                                "Cleartrip",
+                                f"T{len(current_batch)+1}"
                             ))
 
+                        if current_batch:
+                            with sqlite3.connect('airfare_index.db') as conn:
+                                conn.executemany('''
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', current_batch)
                         if current_batch:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
