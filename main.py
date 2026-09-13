@@ -62,7 +62,8 @@ def run_pipeline():
         "scraper_yatra.py",
         "scraper_spicejet.py",
         "scraper_akasa.py",
-        "scraper_ct.py"
+        "scraper_ct.py",
+        "scraper_airindia.py"
     ]
 
     total_passes = 3

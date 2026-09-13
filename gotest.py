@@ -1,163 +1,191 @@
 import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.action_chains import ActionChains
 from datetime import datetime, timedelta
-import re
+import sqlite3
+import json
 import time
+import os
 
-def test_goibibo_scraper():
-    advance_windows = [7]
-    top_20_routes = ["DEL-BLR","DEL-BOM","DEL-HYD"]
-    all_scraped_records = []
+def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
+    with sqlite3.connect('airfare_index.db') as conn:
+        c = conn.cursor()
+        c.execute("""
+            SELECT COUNT(*) FROM raw_fares 
+            WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
+            AND date(timestamp) = date('now')
+        """, (route, window, source))
+        return c.fetchone()[0] > 0
 
-    print("Launching Goibibo Scraper (Accurate Airline Extraction Mode)...")
+def run_goibibo_scraper():
+    advance_windows = [1, 7, 15, 30, 45]
+    top_20_routes = [
+        "DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL", 
+        "BOM-BLR", "BLR-BOM", "DEL-HYD", "HYD-DEL", 
+        "DEL-CCU", "CCU-DEL", "DEL-GOI", "BOM-GOI", 
+        "DEL-MAA", "MAA-DEL", "BOM-MAA", "MAA-BOM", 
+        "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
+    ]
+
+    print("Launching Goibibo API Sniffer (Robust Typing Mode)...")
 
     options = uc.ChromeOptions()
     options.add_argument("--window-size=1920,1080")
+    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
     
     try:
         driver = uc.Chrome(options=options)
+        uc.Chrome.__del__ = lambda self: None 
     except Exception as e:
         print(f"Error launching Chrome: {e}")
         return
-
-    known_airlines = [
-        "IndiGo", "Air India Express", "Air India", 
-        "SpiceJet", "Akasa Air", "Vistara", "Alliance Air"
-    ]
 
     for route in top_20_routes:
         origin, dest = route.split("-")
         
         for window in advance_windows:
+            if is_already_scraped(route, window, "Goibibo"):
+                print(f"⏩ Goibibo: {route} | T+{window} already collected today. Skipping.")
+                continue
+
             future_date_obj = datetime.now() + timedelta(days=window)
-            raw_date = future_date_obj.strftime("%d/%m/%Y")
-            safe_date = raw_date.replace('/', '%2F')
-            
-            print(f"\n--- Goibibo Scraping: {route} | T+{window} Days ({raw_date}) ---")
-            
+            target_month_year = future_date_obj.strftime("%B %Y")
+            target_date_label = future_date_obj.strftime("%b %d %Y")
+
+            print(f"\n--- Goibibo API Sniffing: {route} | T+{window} Days ({target_date_label}) ---")
+
             for attempt in range(1, 3):
                 try:
-                    url = f"https://www.goibibo.com/flight/search?itinerary={origin}-{dest}-{safe_date}&tripType=O&paxType=A-1_C-0_I-0&intl=false&cabinClass=E&lang=eng"
-                    driver.get(url)
+                    driver.get("https://www.goibibo.com/")
+                    wait = WebDriverWait(driver, 10)
+                    time.sleep(3)
                     
-                    flights_loaded = False
-                    for sec in range(35):
-                        # 1. Auto-handle Network Problem overlay if present
-                        refresh_buttons = driver.find_elements(By.XPATH, "//button[contains(translate(text(), 'REFRESH', 'refresh'), 'refresh')]")
-                        if refresh_buttons and refresh_buttons[0].is_displayed():
-                            print("🔄 Auto-clicking Refresh button...")
-                            driver.execute_script("arguments[0].click();", refresh_buttons[0])
-                            time.sleep(2)
+                    # 1. Force kill the Login/Signup popup
+                    ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+                    time.sleep(1)
 
-                        # 2. Auto-dismiss 'GOT IT' comparison tooltip if visible
-                        got_it_buttons = driver.find_elements(By.XPATH, "//button[contains(text(), 'GOT IT') or contains(text(), 'Got it')]")
-                        if got_it_buttons and got_it_buttons[0].is_displayed():
-                            try:
-                                got_it_buttons[0].click()
-                            except Exception:
-                                driver.execute_script("arguments[0].click();", got_it_buttons[0])
+                    # 2. Click the 'From' input block
+                    from_container = wait.until(EC.element_to_be_clickable((By.XPATH, "//span[text()='From']/ancestor::div[1] | //p[text()='Enter city or airport']")))
+                    from_container.click()
+                    time.sleep(1)
 
-                        body_text = driver.find_element(By.TAG_NAME, "body").text
-                        if body_text.count("₹") > 5 or body_text.count("Rs") > 5:
-                            flights_loaded = True
+                    # 3. Type Origin and wait explicitly for dropdown
+                    active_input = driver.switch_to.active_element
+                    active_input.send_keys(origin)
+                    
+                    origin_dropdown = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//ul[@id='autoSuggest-list']//li | //ul[contains(@class, 'autoSuggest')]//li")))
+                    origin_dropdown[0].click()
+                    time.sleep(1)
+
+                    # 4. Type Destination (Focus auto-shifts to 'To' field)
+                    active_input = driver.switch_to.active_element
+                    active_input.send_keys(dest)
+                    
+                    dest_dropdown = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//ul[@id='autoSuggest-list']//li | //ul[contains(@class, 'autoSuggest')]//li")))
+                    dest_dropdown[0].click()
+                    time.sleep(1)
+
+                    # 5. Native Calendar Selection
+                    for _ in range(8):
+                        month_headers = driver.find_elements(By.XPATH, f"//div[contains(text(), '{target_month_year}')]")
+                        if month_headers and month_headers[0].is_displayed():
                             break
-                        time.sleep(1)
                         
-                    if not flights_loaded:
-                        raise Exception("Flight cards did not render in DOM.")
+                        next_btn = driver.find_elements(By.XPATH, "//span[@aria-label='Next Month'] | //div[contains(@class, 'DayPicker-NavButton--next')]")
+                        if next_btn:
+                            next_btn[0].click()
+                        time.sleep(0.5)
 
-                    # Scroll down to load more flights into DOM
-                    driver.execute_script("window.scrollBy(0, 1500)")
-                    time.sleep(1.5)
+                    date_element = wait.until(EC.element_to_be_clickable((By.XPATH, f"//div[contains(@aria-label, '{target_date_label}')]")))
+                    date_element.click()
+                    time.sleep(1)
 
-                    # 3. Card-Level Extraction via JavaScript
-                    card_data = driver.execute_script('''
-                        const cards = Array.from(document.querySelectorAll('div')).filter(el => {
-                            // Find card containers that have an airline name, a time pattern, and a rupee symbol
-                            const txt = el.innerText || "";
-                            return el.children.length > 2 && 
-                                   txt.includes('₹') && 
-                                   /\\d{2}:\\d{2}/.test(txt) &&
-                                   el.offsetHeight > 80 && el.offsetHeight < 300 &&
-                                   el.offsetWidth > 400;
-                        });
+                    # 6. Flush logs & trigger Search
+                    driver.get_log("performance")
+                    search_btn = driver.find_elements(By.XPATH, "//span[text()='SEARCH'] | //button[contains(., 'SEARCH')]")
+                    if search_btn:
+                        search_btn[0].click()
 
-                        // Deduplicate nested parent/child divs by keeping the leaf card container
-                        const uniqueCards = cards.filter(c => !cards.some(other => other !== c && c.contains(other)));
-                        return uniqueCards.map(c => c.innerText);
-                    ''')
+                    print("Waiting for Goibibo backend JSON API response via CDP...")
+                    
+                    # 7. CDP Log Polling Loop
+                    valid_fares = []
+                    for _ in range(25):
+                        logs = driver.get_log("performance")
+                        for log in logs:
+                            try:
+                                message = json.loads(log["message"])["message"]
+                                if message["method"] == "Network.responseReceived":
+                                    mime_type = message["params"]["response"]["mimeType"]
+                                    
+                                    if "application/json" in mime_type:
+                                        request_id = message["params"]["requestId"]
+                                        res = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
+                                        payload_str = res.get("body", "")
+                                        
+                                        if "onwardflights" in payload_str or "totalfare" in payload_str.lower():
+                                            data = json.loads(payload_str)
+                                            flights_list = data.get("data", {}).get("onwardflights", [])
+                                            
+                                            for f in flights_list:
+                                                airline = f.get("airline") or f.get("carrier", {}).get("name") or "Goibibo Partner"
+                                                fare_node = f.get("fare") or f.get("price") or {}
+                                                total = fare_node.get("totalfare") or fare_node.get("totalPrice")
+                                                
+                                                if total and 1500 < float(total) < 75000:
+                                                    base = fare_node.get("basefare") or (float(total) * 0.85)
+                                                    tax = fare_node.get("taxes") or (float(total) * 0.15)
+                                                    
+                                                    valid_fares.append((
+                                                        airline, route, window,
+                                                        round(float(base), 2), round(float(tax), 2), float(total),
+                                                        "Goibibo"
+                                                    ))
+                            except Exception:
+                                continue
+                                
+                        if valid_fares:
+                            break 
+                            
+                        time.sleep(1.5)
 
-                    current_batch = []
-                    for raw_card in card_data:
-                        lines = [l.strip() for l in raw_card.split('\n') if l.strip()]
-                        
-                        # Identify Airline
-                        detected_airline = "Goibibo Partner"
-                        for line in lines:
-                            matched = next((a for a in known_airlines if a.lower() in line.lower()), None)
-                            if matched:
-                                detected_airline = matched
-                                break
+                    if not valid_fares:
+                        raise Exception("Failed to intercept JSON API payload after clicking SEARCH.")
 
-                        # Identify Fare
-                        price_line = next((l for l in lines if '₹' in l), None)
-                        if not price_line:
-                            continue
+                    unique_batch = list(set(valid_fares))
+                    
+                    with sqlite3.connect('airfare_index.db') as conn:
+                        conn.executemany('''
+                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ''', unique_batch)
+                        conn.commit()
 
-                        clean_fare_str = re.sub(r'[^\d]', '', price_line)
-                        if not clean_fare_str:
-                            continue
-
-                        fare_val = float(clean_fare_str)
-                        if 1500 < fare_val < 75000:
-                            current_batch.append({
-                                "ota_source": "Goibibo",
-                                "airline": detected_airline,
-                                "route": route,
-                                "advance_window_days": window,
-                                "base_fare": round(fare_val * 0.85, 2),
-                                "taxes_fees": round(fare_val * 0.15, 2),
-                                "total_fare": fare_val
-                            })
-
-                    if current_batch:
-                        # Deduplicate by airline and price
-                        seen = set()
-                        for item in current_batch:
-                            key = (item["airline"], item["total_fare"])
-                            if key not in seen:
-                                seen.add(key)
-                                all_scraped_records.append(item)
-
-                        print(f"✅ Extracted {len(seen)} distinct flight cards with exact airlines (Attempt {attempt}).")
-                        break
-                    else:
-                        raise Exception("Zero valid card entries parsed.")
+                    print(f"✅ Intercepted {len(unique_batch)} distinct records directly from backend JSON (Attempt {attempt}).")
+                    break
 
                 except Exception as e:
                     print(f"⚠️ Goibibo Attempt {attempt} failed: {e}")
+                    # Re-instantiate a fresh session if the driver crashes completely
+                    if "invalid session id" in str(e).lower():
+                        driver.quit()
+                        driver = uc.Chrome(options=options)
                     if attempt == 1:
-                        time.sleep(4)
-            
+                        time.sleep(3)
+                        
             time.sleep(2)
 
     try:
-        driver.close()
         driver.quit()
     except Exception:
         pass
 
-    print(f"\n==========================================")
-    print(f"Goibibo In-Memory Scraping Complete!")
-    print(f"Total records stored: {len(all_scraped_records)}")
-    print(f"==========================================")
-    
-    if all_scraped_records:
-        print("\nSample records (First 5):")
-        for item in all_scraped_records[:5]:
-            print(item)
-
-    return all_scraped_records
+    print("\nGoibibo Database Scraping Complete!")
 
 if __name__ == "__main__":
-    test_goibibo_scraper()
+    run_goibibo_scraper()
