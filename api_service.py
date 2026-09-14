@@ -3,8 +3,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 import sqlite3
 
+# --- Swagger UI Enhancements ---
+api_description = """
+### MoSPI Airfare Price Index (APIx) Data Service
+Provides programmatic access to clean, deduplicated, and normalized airfare data scraped from major Indian OTAs and direct airline portals.
+
+* **Timezone:** All timestamps are localized to IST (+5:30).
+* **Coverage:** 20 major domestic sectors.
+* **Windows:** T+1, T+7, T+15, T+30, T+45 days.
+"""
+
 app = FastAPI(
     title="MoSPI APIx",
+    description=api_description,
+    version="1.2.0",
     docs_url="/swagger",  
     redoc_url="/redoc"
 )
@@ -227,7 +239,7 @@ DOCUMENTATION_HTML = """
     <header>
         <div class="brand">
             ✈️ MoSPI APIx
-            <span class="badge-version">v1.1.0</span>
+            <span class="badge-version">v1.2.0</span>
         </div>
         <div class="nav-links">
             <a href="#quickstart">Quickstart</a>
@@ -460,11 +472,16 @@ else:
 def get_documentation():
     return DOCUMENTATION_HTML
 
-@app.get("/api/fares/raw")
-def get_raw_fares(hours_back: int = Query(24, description="Lookback hours")):
+@app.get(
+    "/api/fares/raw", 
+    tags=["Core Data Extraction"], 
+    summary="Fetch Raw Flight Records",
+    description="Returns an unaggregated list of flight records suitable for training machine learning models or raw analysis."
+)
+def get_raw_fares(hours_back: int = Query(24, description="Lookback hours to restrict the data retrieval.")):
     q = '''SELECT timestamp, airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time
            FROM raw_fares 
-           WHERE timestamp >= datetime('now', ?) 
+           WHERE timestamp >= datetime('now', '+5 hours', '+30 minutes', ?) 
            AND total_fare IS NOT NULL
            ORDER BY timestamp DESC'''
     time_modifier = f"-{hours_back} hours"
@@ -475,15 +492,20 @@ def get_raw_fares(hours_back: int = Query(24, description="Lookback hours")):
         "data": results
     }
 
-@app.get("/api/fares/compare")
+@app.get(
+    "/api/fares/compare", 
+    tags=["Analytical Endpoints"], 
+    summary="Compare OTA vs. Direct Pricing",
+    description="Calculates the average and minimum fares for a specific route and booking window, grouped by the ticket vendor."
+)
 def compare_fares(
-    route: str = Query(..., example="DEL-BOM"),
-    window: int = Query(..., example=7)
+    route: str = Query(..., description="IATA Route string (e.g., DEL-BOM)", example="DEL-BOM"),
+    window: int = Query(..., description="Advance purchase window in days", example=7)
 ):
     q = '''SELECT ota_source, airline, MIN(total_fare) as lowest_fare, ROUND(AVG(total_fare), 2) as average_fare
            FROM raw_fares 
            WHERE route = ? AND advance_window_days = ? 
-           AND timestamp >= datetime('now', '-24 hours')
+           AND timestamp >= datetime('now', '+5 hours', '+30 minutes', '-24 hours')
            AND total_fare IS NOT NULL
            GROUP BY ota_source, airline 
            ORDER BY lowest_fare ASC'''
@@ -494,11 +516,16 @@ def compare_fares(
         "comparisons": query_db(q, (route, window))
     }
 
-@app.get("/api/fares/matrix")
+@app.get(
+    "/api/fares/matrix", 
+    tags=["Analytical Endpoints"], 
+    summary="Get 24-Hour Fare Matrix",
+    description="Returns a high-level overview of average ticket prices across all tracked routes and windows over the last 24 hours."
+)
 def fare_matrix():
     q = '''SELECT route, advance_window_days as window, ROUND(AVG(total_fare), 2) as average_fare, COUNT(total_fare) as sample_count
            FROM raw_fares 
-           WHERE timestamp >= datetime('now', '-24 hours')
+           WHERE timestamp >= datetime('now', '+5 hours', '+30 minutes', '-24 hours')
            AND total_fare IS NOT NULL
            GROUP BY route, advance_window_days 
            ORDER BY route ASC, window ASC'''
