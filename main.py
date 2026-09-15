@@ -19,9 +19,9 @@ def get_today_ist_stats():
         with sqlite3.connect(DB_PATH) as conn:
             c = conn.cursor()
             c.execute("""
-                SELECT COUNT(*), MAX(datetime(timestamp, '+5 hours', '+30 minutes'))
+                SELECT COUNT(*), MAX(timestamp)
                 FROM raw_fares
-                WHERE date(datetime(timestamp, '+5 hours', '+30 minutes')) = ?
+                WHERE date(timestamp) = ?
             """, (today_ist,))
             count, last_ts = c.fetchone()
             return today_ist, (count or 0), last_ts

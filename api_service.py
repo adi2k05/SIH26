@@ -462,11 +462,9 @@ def get_documentation():
 
 @app.get("/api/fares/raw")
 def get_raw_fares(hours_back: int = Query(24, description="Lookback hours")):
-    # Automatically shifts the output timestamp to IST (+5:30)
-    q = '''SELECT datetime(timestamp, '+5 hours', '+30 minutes') as timestamp, 
-                  airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time
+    q = '''SELECT timestamp, airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time
            FROM raw_fares 
-           WHERE timestamp >= datetime('now', ?) 
+           WHERE timestamp >= datetime('now', '+5 hours', '+30 minutes', ?) 
            AND total_fare IS NOT NULL
            ORDER BY timestamp DESC'''
     time_modifier = f"-{hours_back} hours"
@@ -485,7 +483,7 @@ def compare_fares(
     q = '''SELECT ota_source, airline, MIN(total_fare) as lowest_fare, ROUND(AVG(total_fare), 2) as average_fare
            FROM raw_fares 
            WHERE route = ? AND advance_window_days = ? 
-           AND timestamp >= datetime('now', '-24 hours')
+           AND timestamp >= datetime('now', '+5 hours', '+30 minutes', '-24 hours')
            AND total_fare IS NOT NULL
            GROUP BY ota_source, airline 
            ORDER BY lowest_fare ASC'''
@@ -500,7 +498,7 @@ def compare_fares(
 def fare_matrix():
     q = '''SELECT route, advance_window_days as window, ROUND(AVG(total_fare), 2) as average_fare, COUNT(total_fare) as sample_count
            FROM raw_fares 
-           WHERE timestamp >= datetime('now', '-24 hours')
+           WHERE timestamp >= datetime('now', '+5 hours', '+30 minutes', '-24 hours')
            AND total_fare IS NOT NULL
            GROUP BY route, advance_window_days 
            ORDER BY route ASC, window ASC'''

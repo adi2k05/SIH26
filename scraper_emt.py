@@ -14,7 +14,7 @@ def is_already_scraped(route, window, source):
         c.execute("""
             SELECT COUNT(*) FROM raw_fares 
             WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-            AND date(datetime(timestamp, '+5 hours', '+30 minutes')) = date(datetime('now', '+5 hours', '+30 minutes'))
+            AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
         """, (route, window, source))
         return c.fetchone()[0] > 0
 
