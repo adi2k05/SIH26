@@ -6,23 +6,6 @@ import re
 import time
 import os
 
-KNOWN_AIRLINES = [
-    "IndiGo", "Air-India Express", "Air India Express", "Air India",
-    "SpiceJet", "Akasa Air", "Vistara", "Alliance Air", "Go First", "GoAir"
-]
-
-def normalize_airline(name):
-    if "air-india express" in name.lower() or "air india express" in name.lower():
-        return "Air India Express"
-    return name
-
-def build_ixigo_url(origin, dest, date_str):
-    return (
-        f"https://www.ixigo.com/search/result/flight?"
-        f"from={origin}&to={dest}&date={date_str}"
-        f"&adults=1&children=0&infants=0&class=e&source=Search+Form"
-    )
-
 def is_already_scraped(route, window, source):
     if os.environ.get("FORCE_RESCRAPE") == "1":
         return False
@@ -31,7 +14,7 @@ def is_already_scraped(route, window, source):
         c.execute("""
             SELECT COUNT(*) FROM raw_fares 
             WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-            AND date(timestamp) = date('now')
+            AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
         """, (route, window, source))
         return c.fetchone()[0] > 0
 
@@ -44,19 +27,15 @@ def run_ixigo_scraper():
         "DEL-MAA", "MAA-DEL", "BOM-MAA", "MAA-BOM", 
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
-
-    print("Launching Ixigo Chrome Scraper (DB Pipeline Mode)...")
+    
+    print("Launching Ixigo Scraper (Bulletproof Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
-        )
 
         for route in top_20_routes:
             origin, dest = route.split("-")
-
+            
             for window in advance_windows:
                 if is_already_scraped(route, window, "Ixigo"):
                     print(f"⏩ Ixigo: {route} | T+{window} already collected today. Skipping.")
@@ -64,115 +43,165 @@ def run_ixigo_scraper():
 
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d%m%Y")
-                print(f"\n--- Ixigo Scraping: {route} | T+{window} Days ({future_date_obj.strftime('%d/%m/%Y')}) ---")
-
+                
+                search_url = f"https://www.ixigo.com/search/result/flight?from={origin}&to={dest}&date={date_str}&adults=1&children=0&infants=0&class=e"
+                
+                print(f"\n--- Ixigo Scraping: {route} | T+{window} Days ---")
+                
                 for attempt in range(1, 3):
-                    page = context.new_page()
+                    context = browser.new_context(
+                        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                        viewport={"width": 1920, "height": 1080}
+                    )
+                    page = context.new_page() 
+                    
                     try:
-                        url = build_ixigo_url(origin, dest, date_str)
-                        page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                        page.wait_for_timeout(6000)
-
-                        page.evaluate('''() => {
-                            ["intentOpacityDiv", "intentPreview"].forEach(id => {
-                                const el = document.getElementById(id);
-                                if (el) el.remove();
-                            });
-                        }''')
-
-                        flights_loaded = False
-                        for _ in range(20):
-                            if page.locator('button:has-text("Book"), div:has-text("Book")').count() > 0:
-                                flights_loaded = True
+                        page.goto(search_url, timeout=60000)
+                        page.wait_for_timeout(5000) 
+                        
+                        print("Waiting for results to render...")
+                        loaded = False
+                        for _ in range(30):
+                            body_text = page.locator("body").inner_text()
+                            if "₹" in body_text or "Rs" in body_text:
+                                loaded = True
+                                break
+                            if "no flights" in body_text.lower() or "sold out" in body_text.lower() or "no results" in body_text.lower():
+                                loaded = "EMPTY"
                                 break
                             page.wait_for_timeout(1000)
-
-                        if not flights_loaded:
-                            raise Exception("Flight cards did not render in DOM.")
-
-                        for _ in range(6):
-                            page.mouse.wheel(0, 1500)
-                            page.wait_for_timeout(800)
-
-                        raw_cards = page.evaluate('''() => {
-                            const buttons = Array.from(document.querySelectorAll('button, div')).filter(
-                                e => e.textContent.trim() === 'Book' && e.offsetParent !== null
-                            );
-                            return buttons.map(b => {
-                                let card = b;
-                                for (let i = 0; i < 3; i++) { if (card.parentElement) card = card.parentElement; }
-                                return card.innerText;
-                            });
-                        }''')
-
-                        current_batch = []
-                        seen_flight_numbers = set()
                         
-                        for raw_text in raw_cards:
-                            if not raw_text:
-                                continue
-                            lines = [l.strip() for l in raw_text.split('\n') if l.strip()]
-                            if not lines:
-                                continue
-
-                            airline_idx = next((i for i, l in enumerate(lines[:2]) if any(a.lower() in l.lower() for a in KNOWN_AIRLINES)), None)
-                            if airline_idx is None:
-                                continue
+                        if not loaded:
+                            raise Exception("Timeout waiting for flights to render.")
+                        
+                        if loaded == "EMPTY":
+                            print(f"ℹ️ Ixigo officially returned no flights for T+{window}. Logging NULL.")
+                            with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
+                                ''', ("Unknown", route, window, "Ixigo", "TBD"))
+                                conn.commit()
+                            context.close()
+                            break 
+                        
+                        print("Scrolling to load all flights...")
+                        seen_flights = set()
+                        route_data = []
+                        flight_idx = 1
+                        
+                        js_extractor = """
+                        () => {
+                            let results = [];
+                            let allElements = Array.from(document.querySelectorAll('*'));
+                            let flightNumberElements = allElements.filter(el => {
+                                let text = el.textContent.trim();
+                                return /^[A-Z0-9]{2}\\s?\\d{3,4}$/.test(text) && el.children.length === 0;
+                            });
                             
-                            airline_line = lines[airline_idx]
-                            flight_number = lines[airline_idx + 1] if len(lines) > airline_idx + 1 else None
+                            flightNumberElements.forEach(fnEl => {
+                                let parent = fnEl.parentElement;
+                                let card = null;
+                                for (let i = 0; i < 15; i++) {
+                                    if (!parent) break;
+                                    let text = parent.innerText || parent.textContent;
+                                    if (text.includes('₹') && text.length > 50) {
+                                        card = parent;
+                                        break;
+                                    }
+                                    parent = parent.parentElement;
+                                }
+                                if (card) {
+                                    results.push(card.innerText);
+                                }
+                            });
+                            return results;
+                        }
+                        """
+                        
+                        scroll_attempts = 0
+                        max_scrolls = 40
+                        last_flight_count = 0
+                        stagnant_scrolls = 0
+                        
+                        while scroll_attempts < max_scrolls:
+                            card_texts = page.evaluate(js_extractor)
                             
-                            if not flight_number or not re.match(r'^[A-Z0-9]{2,3}\d{2,5}$', flight_number):
-                                continue
-                            if flight_number in seen_flight_numbers:
-                                continue  
-
-                            if origin not in lines or dest not in lines:
-                                continue  
-
-                            price_line = next((l for l in lines if re.match(r'^₹[\d,]+$', l)), None)
-                            if not price_line:
-                                continue
-
-                            total_fare = float(re.sub(r'[^\d.]', '', price_line))
-                            if not (1500 < total_fare < 75000):
-                                continue
-
-                            seen_flight_numbers.add(flight_number)
-                            current_batch.append((
-                                normalize_airline(airline_line),
-                                route,
-                                window,
-                                round(total_fare * 0.85, 2),
-                                round(total_fare * 0.15, 2),
-                                total_fare,
-                                "Ixigo",
-                                flight_number
-                            ))
-
-                        if current_batch:
+                            for card_text in card_texts:
+                                lines = [line.strip() for line in card_text.split('\n') if line.strip()]
+                                
+                                flight_number = None
+                                airline = "Unknown"
+                                total_fare = 0
+                                
+                                for i, line in enumerate(lines):
+                                    if re.match(r'^[A-Z0-9]{2}\s?\d{3,4}$', line):
+                                        flight_number = line.replace(" ", "")
+                                        if i > 0:
+                                            airline = lines[i-1]
+                                    
+                                    if "₹" in line:
+                                        clean = line.replace("₹", "").replace(",", "").strip()
+                                        if re.match(r'^\d{4,6}$', clean):
+                                            total_fare = int(clean)
+                                
+                                if flight_number and total_fare > 1000:
+                                    if flight_number not in seen_flights:
+                                        seen_flights.add(flight_number)
+                                        base_fare = round(total_fare * 0.85, 2)
+                                        taxes_fees = round(total_fare * 0.15, 2)
+                                        
+                                        dept_time = f"T{flight_idx}"
+                                        flight_idx += 1
+                                        
+                                        route_data.append((
+                                            airline, route, window, 
+                                            base_fare, taxes_fees, total_fare, "Ixigo", dept_time
+                                        ))
+                            
+                            if len(seen_flights) == last_flight_count:
+                                stagnant_scrolls += 1
+                                if stagnant_scrolls >= 4:
+                                    break 
+                            else:
+                                stagnant_scrolls = 0
+                                
+                            last_flight_count = len(seen_flights)
+                            
+                            # --- HARDWARE SCROLL FIX ---
+                            # 1. Move the mouse to the center of the page (960, 540 is center of 1920x1080)
+                            page.mouse.move(960, 540)
+                            # 2. Simulate a physical mouse wheel spin downwards
+                            page.mouse.wheel(0, 1200)
+                            # 3. Add a PageDown keypress just in case the mouse misses the container
+                            page.keyboard.press("PageDown")
+                            
+                            page.wait_for_timeout(2000)
+                            scroll_attempts += 1
+                        
+                        if route_data:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', current_batch)
+                                ''', route_data)
                                 conn.commit()
-                            print(f"✅ Ixigo T+{window}: captured {len(current_batch)} fares (Attempt {attempt}).")
-                            page.close()
-                            break
+                            print(f"✅ Saved {len(route_data)} unique records (Attempt {attempt}).")
+                            context.close()
+                            break 
                         else:
-                            raise Exception("Zero valid fares parsed from card texts.")
-
+                            raise Exception("Zero valid flights extracted.")
+                                        
                     except Exception as e:
-                        print(f"⚠️ Ixigo T+{window} Attempt {attempt} failed: {e}")
-                        page.close()
+                        print(f"⚠️ Ixigo Attempt {attempt} failed: {e}")
+                        context.close()
                         if attempt == 1:
-                            time.sleep(3)
-
+                            time.sleep(5)
+                    
                 time.sleep(2)
 
         browser.close()
-        print("\nIxigo Database Scraping Complete!")
+        print("\nIxigo Multi-Route Scraping Complete!")
 
 if __name__ == "__main__":
     run_ixigo_scraper()

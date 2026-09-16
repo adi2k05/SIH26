@@ -1,6 +1,6 @@
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 from datetime import datetime, timedelta
+import urllib.parse
 import sqlite3
 import re
 import time
@@ -28,16 +28,24 @@ def run_cmt_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching Cleartrip Multi-Route Scraper (Database Write Mode)...")
+    city_map = {
+        "DEL": "New Delhi", "BOM": "Mumbai", "BLR": "Bangalore", 
+        "HYD": "Hyderabad", "CCU": "Kolkata", "GOI": "Goa", 
+        "MAA": "Chennai", "AMD": "Ahmedabad"
+    }
 
-    with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(
-            headless=False, 
-            args=["--disable-blink-features=AutomationControlled"]
-        )
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            viewport={"width": 1920, "height": 1080}
+    print("Launching Cleartrip Scraper (Scrolling & Database Write Mode)...")
+    
+    user_data_dir = os.path.join(os.getcwd(), "cleartrip_browser_profile")
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            channel="chrome",
+            headless=False,
+            viewport={"width": 1920, "height": 1080},
+            args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
+            ignore_default_args=["--enable-automation"]
         )
 
         for route in top_20_routes:
@@ -49,88 +57,117 @@ def run_cmt_scraper():
                     continue
 
                 future_date_obj = datetime.now() + timedelta(days=window)
-                date_str = future_date_obj.strftime("%d-%m-%Y")
+                date_str = future_date_obj.strftime("%d/%m/%Y")
+                
+                origin_name = city_map.get(origin, origin)
+                dest_name = city_map.get(dest, dest)
+                
+                origin_encoded = urllib.parse.quote(f"{origin} - {origin_name}, IN", safe=',')
+                dest_encoded = urllib.parse.quote(f"{dest} - {dest_name}, IN", safe=',')
+
                 print(f"\n--- Cleartrip Scraping: {route} | T+{window} Days ({date_str}) ---")
                 
                 for attempt in range(1, 3):
-                    page = context.new_page()
+                    page = context.pages[0] if context.pages else context.new_page()
+                    
                     try:
-                        url = f"https://www.cleartrip.com/flights/results?adults=1&childs=0&infants=0&class=Economy&depart_date={date_str}&from={origin}&to={dest}&intl=n"
+                        url = f"https://www.cleartrip.com/flights/results?adults=1&childs=0&infants=0&class=Economy&depart_date={date_str}&from={origin}&to={dest}&intl=n&origin={origin_encoded}&destination={dest_encoded}"
                         
                         page.goto(url, wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_selector('button:has-text("Book")', timeout=25000)
+                        page.wait_for_timeout(2000)
+
+                        print("Scrolling to load all virtual flight cards...")
+                        seen_card_signatures = set()
+                        flight_records = []
                         
-                        page.wait_for_timeout(2000)
-                        page.evaluate("window.scrollBy(0, 1000);")
-                        page.wait_for_timeout(2000)
+                        scroll_attempts = 0
+                        max_scrolls = 30
+                        stagnant_scrolls = 0
 
-                        raw_flight_texts = page.evaluate('''() => {
-                            const buttons = Array.from(document.querySelectorAll('button')).filter(b => b.innerText.includes('Book'));
-                            return buttons.map(btn => {
-                                let card = btn.parentElement.parentElement.parentElement.parentElement;
-                                return card ? card.innerText : "";
-                            });
-                        }''')
+                        while scroll_attempts < max_scrolls:
+                            # Cleaned up JS function block to avoid syntax and evaluation truncation errors
+                            raw_flight_texts = page.evaluate("""() => {
+                                const buttons = Array.from(document.querySelectorAll('button')).filter(b => b.innerText && b.innerText.includes('Book'));
+                                return buttons.map(btn => {
+                                    let card = btn.closest('div[class*="flight"]') || btn.parentElement.parentElement.parentElement.parentElement;
+                                    return card ? card.innerText : "";
+                                });
+                            }""")
 
-                        current_batch = []
-                        for raw_text in raw_flight_texts:
-                            if not raw_text:
-                                continue
-                            
-                            lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-                            price_line = next((line for line in lines if '₹' in line), None)
-                            if not price_line:
-                                continue
-                            
-                            clean_price_str = re.sub(r'[^\d.]', '', price_line)
-                            if not clean_price_str:
-                                continue
+                            new_cards_found = False
+                            for raw_text in raw_flight_texts:
+                                if not raw_text or len(raw_text) < 30:
+                                    continue
                                 
-                            total_fare = float(clean_price_str)
-                            
-                            if not (1500 < total_fare < 75000):
-                                continue
+                                signature = raw_text[:50].strip()
+                                if signature in seen_card_signatures:
+                                    continue
+                                
+                                lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+                                price_line = next((line for line in lines if '₹' in line), None)
+                                if not price_line:
+                                    continue
+                                
+                                clean_price_str = re.sub(r'[^\d.]', '', price_line)
+                                if not clean_price_str:
+                                    continue
+                                    
+                                try:
+                                    total_fare = float(clean_price_str)
+                                except ValueError:
+                                    continue
+                                
+                                if not (1500 < total_fare < 75000):
+                                    continue
 
-                            airline_name = "Cleartrip Partner"
-                            for line in lines[:6]:
-                                if any(carrier in line for carrier in ["IndiGo", "Air India Express", "Air India", "SpiceJet", "Akasa Air", "Akasa", "Vistara"]):
-                                    airline_name = line
-                                    break
+                                airline_name = "Cleartrip Partner"
+                                for line in lines[:6]:
+                                    if any(carrier in line for carrier in ["IndiGo", "Air India Express", "Air India", "SpiceJet", "Akasa Air", "Akasa", "Vistara"]):
+                                        airline_name = line
+                                        break
 
-                          # Structure formatted for executemany tuple mapping
-                            current_batch.append((
-                                airline_name,
-                                route,
-                                window,
-                                round(total_fare * 0.85, 2),
-                                round(total_fare * 0.15, 2),
-                                total_fare,
-                                "Cleartrip",
-                                f"T{len(current_batch)+1}"
-                            ))
+                                seen_card_signatures.add(signature)
+                                new_cards_found = True
+                                
+                                flight_records.append((
+                                    airline_name, route, window,
+                                    round(total_fare * 0.85, 2), round(total_fare * 0.15, 2),
+                                    total_fare, "Cleartrip", f"T{len(flight_records)+1}"
+                                ))
 
-                        if current_batch:
+                            if not new_cards_found:
+                                stagnant_scrolls += 1
+                                if stagnant_scrolls >= 4:
+                                    break 
+                            else:
+                                stagnant_scrolls = 0
+
+                            page.mouse.move(960, 540)
+                            page.mouse.wheel(0, 1200)
+                            page.wait_for_timeout(1500)
+                            scroll_attempts += 1
+
+                        if flight_records:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', current_batch)
+                                ''', flight_records)
                                 conn.commit()
-                            print(f"✅ Saved {len(current_batch)} records (Attempt {attempt}).")
-                            page.close()
+                            print(f"✅ Saved {len(flight_records)} unique records (Attempt {attempt}).")
                             break
                         else:
                             raise Exception("Zero valid fare numbers parsed from card texts.")
 
                     except Exception as e:
                         print(f"⚠️ Cleartrip Attempt {attempt} failed: {e}")
-                        page.close()
                         if attempt == 1:
                             time.sleep(3)
                 
                 time.sleep(1.5)
 
-        browser.close()
+        context.close()
         print("\nCleartrip Database Scraping Complete!")
 
 if __name__ == "__main__":

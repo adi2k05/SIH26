@@ -1,17 +1,15 @@
 import sqlite3
-import time
 
-def clean_database():
-    print("Starting database vacuum. This might take 10-20 seconds...")
-    start_time = time.time()
-    
+def clear_today_cleartrip_data():
     with sqlite3.connect('airfare_index.db') as conn:
-        # The VACUUM command rebuilds the entire database file, 
-        # removing all the empty free space left behind by the deleted table.
-        conn.execute("VACUUM")
-        
-    print(f"✅ Database successfully compressed in {round(time.time() - start_time, 2)} seconds!")
-    print("Check your file size now. It should be back to normal.")
+        c = conn.cursor()
+        c.execute("""
+            DELETE FROM raw_fares 
+            WHERE ota_source = 'Cleartrip' 
+            AND date(timestamp) = '2026-09-16'
+        """)
+        conn.commit()
+        print(f"🗑️ Successfully deleted {c.rowcount} Cleartrip records for September 16, 2026.")
 
 if __name__ == "__main__":
-    clean_database()
+    clear_today_cleartrip_data()
