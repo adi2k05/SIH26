@@ -59,36 +59,66 @@ def run_emt_scraper():
                         
                         page.goto(url, wait_until="domcontentloaded", timeout=45000)
                         
-                        flights_loaded = False
-                        for _ in range(25):
-                            body_text = page.locator("body").inner_text()
-                            if body_text.count("₹") > 5 or body_text.count("Rs") > 5:
-                                flights_loaded = True
-                                break
-                            page.wait_for_timeout(1000)
-                            
-                        if not flights_loaded:
-                            raise Exception("Flight cards did not render in DOM.")
-
+                        # Wait specifically for the flight list container to render
+                        page.wait_for_selector(".fltResult, div[id^='divFlightResult'], .flight-card", timeout=30000)
+                        
+                        # A small scroll to ensure lazy-loaded elements populate
                         page.evaluate("window.scrollBy(0, 1500)")
-                        page.wait_for_timeout(1500)
+                        page.wait_for_timeout(2000)
 
-                        lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
-                        fares = [int(re.sub(r'[^\d]', '', l)) for l in lines if ('₹' in l or 'Rs' in l) and re.sub(r'[^\d]', '', l)]
-                        valid_fares = [f for f in fares if 1500 < f < 75000]
+                        # --- UPDATED JS EXTRACTION: Airline & Fare ---
+                        extracted_flights = page.evaluate("""() => {
+                            let flights = [];
+                            let cards = document.querySelectorAll('.fltResult, div[id^="divFlightResult"], .flight-card');
+                            
+                            cards.forEach(card => {
+                                // 1. Extract Airline
+                                let airlineEl = card.querySelector('.tx-thme, .air-line-name, span.txt-r4, .airline-name');
+                                let rawAirline = airlineEl ? airlineEl.innerText.trim() : "Unknown Airline";
+                                // Clean up generic partner tags from the name
+                                let actualAirline = rawAirline.replace(/Operated by|Partner/gi, '').trim();
+                                if (!actualAirline) actualAirline = "EaseMyTrip Partner";
 
-                        if valid_fares:
+                                // 2. Extract Price
+                                let priceEl = card.querySelector('.txt-r6, .txt-r6-n, .price');
+                                if (priceEl && priceEl.innerText) {
+                                    let cleanNum = parseInt(priceEl.innerText.replace(/[^0-9]/g, ''));
+                                    if (!isNaN(cleanNum)) {
+                                        flights.push({
+                                            airline: actualAirline,
+                                            fare: cleanNum
+                                        });
+                                    }
+                                }
+                            });
+                            return flights;
+                        }""")
+
+                        # Filter out invalid fares
+                        valid_flights = [f for f in extracted_flights if 1500 < f['fare'] < 75000]
+
+                        if valid_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', [("EaseMyTrip Partner", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "EaseMyTrip", f"T{idx+1}") for idx, f in enumerate(valid_fares)])
+                                ''', [(
+                                    flight['airline'], 
+                                    route, 
+                                    window, 
+                                    round(flight['fare'] * 0.85, 2), 
+                                    round(flight['fare'] * 0.15, 2), 
+                                    flight['fare'], 
+                                    "EaseMyTrip", 
+                                    f"T{idx+1}" 
+                                ) for idx, flight in enumerate(valid_flights)])
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_fares)} records (Attempt {attempt}).")
+                                
+                            print(f"✅ Saved {len(valid_flights)} records (Attempt {attempt}).")
                             page.close()
                             break
                         else:
-                            raise Exception("Zero valid fare numbers parsed.")
+                            raise Exception("Zero valid flights extracted from DOM.")
 
                     except Exception as e:
                         print(f"⚠️ EMT Attempt {attempt} failed: {e}")
