@@ -28,7 +28,7 @@ def run_ixigo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Ixigo Scraper (Bulletproof Mode)...")
+    print("Launching Ixigo Scraper (Non-Stop Only Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -85,11 +85,12 @@ def run_ixigo_scraper():
                             context.close()
                             break 
                         
-                        print("Scrolling to load all flights...")
+                        print("Scrolling to load all direct flights...")
                         seen_flights = set()
                         route_data = []
                         flight_idx = 1
                         
+                        # JavaScript extractor that filters out any card containing 'stop'
                         js_extractor = """
                         () => {
                             let results = [];
@@ -105,9 +106,12 @@ def run_ixigo_scraper():
                                 for (let i = 0; i < 15; i++) {
                                     if (!parent) break;
                                     let text = parent.innerText || parent.textContent;
+                                    // Must contain price, be a valid card block, AND exclude connecting flights
                                     if (text.includes('₹') && text.length > 50) {
-                                        card = parent;
-                                        break;
+                                        if (!text.toLowerCase().includes('stop')) {
+                                            card = parent;
+                                            break;
+                                        }
                                     }
                                     parent = parent.parentElement;
                                 }
@@ -168,15 +172,10 @@ def run_ixigo_scraper():
                                 
                             last_flight_count = len(seen_flights)
                             
-                            # --- HARDWARE SCROLL FIX ---
-                            # 1. Move the mouse to the center of the page (960, 540 is center of 1920x1080)
                             page.mouse.move(960, 540)
-                            # 2. Simulate a physical mouse wheel spin downwards
                             page.mouse.wheel(0, 1200)
-                            # 3. Add a PageDown keypress just in case the mouse misses the container
                             page.keyboard.press("PageDown")
-                            
-                            page.wait_for_timeout(2000)
+                            page.wait_for_timeout(1500)
                             scroll_attempts += 1
                         
                         if route_data:
@@ -186,11 +185,11 @@ def run_ixigo_scraper():
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', route_data)
                                 conn.commit()
-                            print(f"✅ Saved {len(route_data)} unique records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(route_data)} unique non-stop records (Attempt {attempt}).")
                             context.close()
                             break 
                         else:
-                            raise Exception("Zero valid flights extracted.")
+                            raise Exception("Zero valid non-stop flights extracted.")
                                         
                     except Exception as e:
                         print(f"⚠️ Ixigo Attempt {attempt} failed: {e}")
@@ -201,7 +200,7 @@ def run_ixigo_scraper():
                 time.sleep(2)
 
         browser.close()
-        print("\nIxigo Multi-Route Scraping Complete!")
+        print("\nIxigo Non-Stop Scraping Complete!")
 
 if __name__ == "__main__":
     run_ixigo_scraper()

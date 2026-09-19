@@ -1,5 +1,4 @@
 from playwright.sync_api import sync_playwright
-from playwright_stealth import Stealth
 from datetime import datetime, timedelta
 import sqlite3
 import re
@@ -29,22 +28,35 @@ def run_akasa_scraper():
     ]
     
     # HARDCODED EXCLUSIONS
-    # Akasa Air operates at Manohar International (GOX), not Dabolim (GOI).
+    # Akasa Air operates out of Manohar International (GOX), not Dabolim (GOI).
     unsupported_akasa_routes = [
         "DEL-GOI", "BOM-GOI"
     ]
     
-    print("Launching Akasa Air Scraper (Bulletproof Mode)...")
+    print("Launching Akasa Air Scraper (Undetectable Native Chrome Mode)...")
 
-    with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+    # Persistent Chrome directory to bypass Cloudflare/bot mitigation
+    user_data_dir = os.path.join(os.getcwd(), "akasa_browser_profile")
+
+    with sync_playwright() as p:
+        context = p.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            channel="chrome",  # Uses your installed real Google Chrome
+            headless=False,
+            viewport={"width": 1920, "height": 1080},
+            args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
+            ignore_default_args=["--enable-automation"]
+        )
+
+        # Primary page reference
+        page = context.pages[0] if context.pages else context.new_page()
 
         for route in top_20_routes:
             origin, dest = route.split("-")
             
             # --- BYPASS NON-OPERATED ROUTES INSTANTLY ---
             if route in unsupported_akasa_routes:
-                print(f"ℹ️ {route} is unsupported by Akasa (uses GOX instead of GOI). Skipping permanently.")
+                print(f"ℹ️ {route} is unsupported by Akasa (operates at GOX, not GOI). Logging NULL.")
                 for window in advance_windows:
                     if not is_already_scraped(route, window, "Akasa Direct"):
                         with sqlite3.connect('airfare_index.db') as conn:
@@ -64,20 +76,24 @@ def run_akasa_scraper():
                 print(f"\n--- Akasa Scraping: {route} | T+{window} Days ---")
                 
                 for attempt in range(1, 3):
-                    context = browser.new_context(viewport={"width": 1920, "height": 1080})
-                    page = context.new_page() 
-                    
                     try:
                         page.goto("https://www.akasaair.com/", wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(3500) 
+
+                        # Auto-dismiss cookie popups or alert overlays if they appear
+                        try:
+                            page.locator("button:has-text('Accept'), button:has-text('Got it'), button[aria-label='Close']").click(timeout=1500)
+                        except Exception:
+                            pass
                         
+                        # --- ORIGIN SELECTION ---
                         loc_from = page.locator("#From")
                         loc_from.click(force=True)
                         page.wait_for_timeout(500)
                         page.keyboard.press("Control+A")
                         page.keyboard.press("Backspace")
-                        page.keyboard.type(origin, delay=200)
-                        page.wait_for_timeout(3000)
+                        page.keyboard.type(origin, delay=150)
+                        page.wait_for_timeout(2500)
                         
                         origin_found = page.evaluate(f'''(iata) => {{
                             let els = Array.from(document.querySelectorAll('*')).filter(e => e.textContent.trim() === iata && e.children.length === 0);
@@ -86,17 +102,18 @@ def run_akasa_scraper():
                         }}''', origin)
                         
                         if not origin_found:
-                            raise Exception(f"Origin {origin} not selectable in dropdown. Retrying...")
+                            raise Exception(f"Origin {origin} dropdown item not found.")
                         
-                        page.wait_for_timeout(2500)
+                        page.wait_for_timeout(2000)
                         
+                        # --- DESTINATION SELECTION ---
                         loc_to = page.locator("#To")
                         loc_to.click(force=True)
                         page.wait_for_timeout(500)
                         page.keyboard.press("Control+A")
                         page.keyboard.press("Backspace")
-                        page.keyboard.type(dest, delay=200)
-                        page.wait_for_timeout(3000)
+                        page.keyboard.type(dest, delay=150)
+                        page.wait_for_timeout(2500)
                         
                         dest_found = page.evaluate(f'''(iata) => {{
                             let els = Array.from(document.querySelectorAll('*')).filter(e => e.textContent.trim() === iata && e.children.length === 0);
@@ -105,18 +122,18 @@ def run_akasa_scraper():
                         }}''', dest)
                         
                         if not dest_found:
-                            # --- CRITICAL FIX: Treat as UI Lag ---
-                            # Do NOT insert NULL. Throw exception to retry the attempt.
-                            raise Exception(f"Destination {dest} not selectable in dropdown. Retrying...")
+                            raise Exception(f"Destination {dest} dropdown item not found.")
                                 
                         page.wait_for_timeout(1500)
                         
+                        # --- DATE PICKER ---
                         page.get_by_placeholder(re.compile(r"Departure date", re.I)).click(force=True)
                         page.wait_for_timeout(1500)
                         
                         target_month_year = future_date_obj.strftime("%B %Y")
                         target_day = str(int(future_date_obj.strftime("%d")))
                         
+                        # Navigate forward if target month is in a subsequent calendar page
                         for _ in range(5):
                             if page.get_by_text(target_month_year, exact=True).is_visible():
                                 break
@@ -166,11 +183,11 @@ def run_akasa_scraper():
                         
                         page.get_by_text("Search Flights").first.click(force=True)
                         
+                        # --- RESULTS EXTRACTION ---
                         flights_loaded = False
                         for _ in range(30):
                             try:
                                 body_text = page.locator("body").inner_text()
-                                # Log NULL safely only if the results page explicitly states no flights
                                 if "no flights" in body_text.lower() or "sold out" in body_text.lower():
                                     with sqlite3.connect('airfare_index.db') as conn:
                                         conn.execute('''
@@ -193,7 +210,6 @@ def run_akasa_scraper():
                             raise Exception("Flight results failed to render.")
                             
                         if flights_loaded == "EMPTY":
-                            context.close()
                             break
                         
                         lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
@@ -208,20 +224,18 @@ def run_akasa_scraper():
                                 ''', [("Akasa Air", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Akasa Direct", f"T{idx+1}") for idx, f in enumerate(valid_fares)])
                                 conn.commit()
                             print(f"✅ Saved {len(valid_fares)} direct records (Attempt {attempt}).")
-                            context.close()
                             break
                         else:
-                            raise Exception("Zero fares extracted.")
+                            raise Exception("Zero fares extracted from card texts.")
                                         
                     except Exception as e:
                         print(f"⚠️ Akasa Attempt {attempt} failed: {e}")
-                        context.close()
                         if attempt == 1:
-                            time.sleep(5)
+                            time.sleep(4)
                     
                 time.sleep(2)
 
-        browser.close()
+        context.close()
         print("\nAkasa Multi-Route Scraping Complete!")
 
 if __name__ == "__main__":
