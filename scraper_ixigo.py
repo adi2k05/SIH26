@@ -9,14 +9,19 @@ import os
 def is_already_scraped(route, window, source):
     if os.environ.get("FORCE_RESCRAPE") == "1":
         return False
+    if not os.path.exists('airfare_index.db'):
+        return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
-        c.execute("""
-            SELECT COUNT(*) FROM raw_fares 
-            WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-            AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
-        """, (route, window, source))
-        return c.fetchone()[0] > 0
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM raw_fares 
+                WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
+                AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
+            """, (route, window, source))
+            return c.fetchone()[0] > 0
+        except sqlite3.OperationalError:
+            return False
 
 def run_ixigo_scraper():
     advance_windows = [1, 7, 15, 30, 45]
@@ -28,10 +33,13 @@ def run_ixigo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Ixigo Scraper (Non-Stop Only Mode)...")
+    print("Launching Ixigo Scraper (Native &stops=0 URL Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+        browser = p.chromium.launch(
+            headless=False, 
+            args=["--disable-blink-features=AutomationControlled"]
+        )
 
         for route in top_20_routes:
             origin, dest = route.split("-")
@@ -44,9 +52,10 @@ def run_ixigo_scraper():
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d%m%Y")
                 
-                search_url = f"https://www.ixigo.com/search/result/flight?from={origin}&to={dest}&date={date_str}&adults=1&children=0&infants=0&class=e"
+                # --- NATIVE NON-STOP URL PARAMETER ---
+                search_url = f"https://www.ixigo.com/search/result/flight?from={origin}&to={dest}&date={date_str}&adults=1&children=0&infants=0&class=e&stops=0"
                 
-                print(f"\n--- Ixigo Scraping: {route} | T+{window} Days ---")
+                print(f"\n--- Ixigo Scraping: {route} | T+{window} Days ({date_str}) ---")
                 
                 for attempt in range(1, 3):
                     context = browser.new_context(
@@ -78,6 +87,13 @@ def run_ixigo_scraper():
                             print(f"ℹ️ Ixigo officially returned no flights for T+{window}. Logging NULL.")
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
+                                conn.execute('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
                                 ''', ("Unknown", route, window, "Ixigo", "TBD"))
@@ -90,33 +106,35 @@ def run_ixigo_scraper():
                         route_data = []
                         flight_idx = 1
                         
-                        # JavaScript extractor that filters out any card containing 'stop'
+                        # Clean, streamlined extractor since URL already guarantees non-stops
                         js_extractor = """
                         () => {
                             let results = [];
-                            let allElements = Array.from(document.querySelectorAll('*'));
-                            let flightNumberElements = allElements.filter(el => {
-                                let text = el.textContent.trim();
-                                return /^[A-Z0-9]{2}\\s?\\d{3,4}$/.test(text) && el.children.length === 0;
-                            });
+                            let priceElements = document.querySelectorAll('[data-testid="pricing"]');
                             
-                            flightNumberElements.forEach(fnEl => {
-                                let parent = fnEl.parentElement;
-                                let card = null;
-                                for (let i = 0; i < 15; i++) {
-                                    if (!parent) break;
-                                    let text = parent.innerText || parent.textContent;
-                                    // Must contain price, be a valid card block, AND exclude connecting flights
-                                    if (text.includes('₹') && text.length > 50) {
-                                        if (!text.toLowerCase().includes('stop')) {
-                                            card = parent;
-                                            break;
-                                        }
+                            priceElements.forEach(priceEl => {
+                                let card = priceEl.closest('div[class*="shadow-sm"], div[class*="border-"], div[class*="tile"], div[class*="card"]') || priceEl.parentElement;
+                                if (!card) return;
+
+                                let cardText = card.innerText || "";
+                                let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+
+                                let cleanPrice = parseInt((priceEl.innerText || "").replace(/[^0-9]/g, ''));
+                                if (isNaN(cleanPrice) || cleanPrice < 1000) return;
+
+                                let flightNum = "";
+                                let airline = "Unknown";
+                                
+                                for (let i = 0; i < Math.min(10, lines.length); i++) {
+                                    if (/^[A-Z0-9]{2}[\\-\\s]?\\d{3,4}/i.test(lines[i])) {
+                                        flightNum = lines[i].replace(/\\s+/g, '-');
+                                        if (i > 0) airline = lines[i-1]; 
+                                        break;
                                     }
-                                    parent = parent.parentElement;
                                 }
-                                if (card) {
-                                    results.push(card.innerText);
+                                
+                                if (flightNum) {
+                                    results.push({ airline: airline, flight_number: flightNum, total_fare: cleanPrice });
                                 }
                             });
                             return results;
@@ -124,48 +142,31 @@ def run_ixigo_scraper():
                         """
                         
                         scroll_attempts = 0
-                        max_scrolls = 40
+                        max_scrolls = 30
                         last_flight_count = 0
                         stagnant_scrolls = 0
                         
                         while scroll_attempts < max_scrolls:
-                            card_texts = page.evaluate(js_extractor)
+                            current_flights = page.evaluate(js_extractor)
                             
-                            for card_text in card_texts:
-                                lines = [line.strip() for line in card_text.split('\n') if line.strip()]
-                                
-                                flight_number = None
-                                airline = "Unknown"
-                                total_fare = 0
-                                
-                                for i, line in enumerate(lines):
-                                    if re.match(r'^[A-Z0-9]{2}\s?\d{3,4}$', line):
-                                        flight_number = line.replace(" ", "")
-                                        if i > 0:
-                                            airline = lines[i-1]
+                            for f in current_flights:
+                                uniq_key = f"{f['flight_number']}_{f['total_fare']}"
+                                if uniq_key not in seen_flights:
+                                    seen_flights.add(uniq_key)
+                                    base_fare = round(f['total_fare'] * 0.85, 2)
+                                    taxes_fees = round(f['total_fare'] * 0.15, 2)
                                     
-                                    if "₹" in line:
-                                        clean = line.replace("₹", "").replace(",", "").strip()
-                                        if re.match(r'^\d{4,6}$', clean):
-                                            total_fare = int(clean)
-                                
-                                if flight_number and total_fare > 1000:
-                                    if flight_number not in seen_flights:
-                                        seen_flights.add(flight_number)
-                                        base_fare = round(total_fare * 0.85, 2)
-                                        taxes_fees = round(total_fare * 0.15, 2)
-                                        
-                                        dept_time = f"T{flight_idx}"
-                                        flight_idx += 1
-                                        
-                                        route_data.append((
-                                            airline, route, window, 
-                                            base_fare, taxes_fees, total_fare, "Ixigo", dept_time
-                                        ))
+                                    dept_time = f"T{flight_idx}"
+                                    flight_idx += 1
+                                    
+                                    route_data.append((
+                                        f['airline'], route, window, 
+                                        base_fare, taxes_fees, f['total_fare'], "Ixigo", dept_time, f['flight_number']
+                                    ))
                             
                             if len(seen_flights) == last_flight_count:
                                 stagnant_scrolls += 1
-                                if stagnant_scrolls >= 4:
+                                if stagnant_scrolls >= 3:
                                     break 
                             else:
                                 stagnant_scrolls = 0
@@ -173,18 +174,26 @@ def run_ixigo_scraper():
                             last_flight_count = len(seen_flights)
                             
                             page.mouse.move(960, 540)
-                            page.mouse.wheel(0, 1200)
+                            page.mouse.wheel(0, 1500)
                             page.keyboard.press("PageDown")
-                            page.wait_for_timeout(1500)
+                            page.wait_for_timeout(1200)
                             scroll_attempts += 1
                         
                         if route_data:
                             with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 ''', route_data)
                                 conn.commit()
+                                
                             print(f"✅ Saved {len(route_data)} unique non-stop records (Attempt {attempt}).")
                             context.close()
                             break 
@@ -197,7 +206,7 @@ def run_ixigo_scraper():
                         if attempt == 1:
                             time.sleep(5)
                     
-                time.sleep(2)
+                time.sleep(3)
 
         browser.close()
         print("\nIxigo Non-Stop Scraping Complete!")
