@@ -63,7 +63,8 @@ def run_pipeline():
         "scraper_spicejet.py",
         "scraper_akasa.py",
         "scraper_ct.py",
-        "scraper_ixigo.py"
+        "scraper_ixigo.py",
+        "scraper_goibibo.py",
         "scraper_airindia.py",
         "scraper_mmt.py",
         "scraper_indigo.py"

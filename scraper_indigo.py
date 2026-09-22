@@ -98,62 +98,50 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     dest_item.click(force=True)
     time.sleep(1.2)
 
-    # 4. Select Departure Date (BULLETPROOF ASYNC JS CALENDAR NAVIGATOR)
+    # 4. Select Departure Date
     print(f"📅 Selecting Date: {display_date} (target code: {target_yyyy_mm_dd})...")
     
     page.locator("div[class*='search-widget-form-body__departure']").first.click(force=True)
     time.sleep(1.5)
 
-    # This async JS function executes natively in the browser, immune to DOM detachment
-    js_calendar_nav = f"""
-    async () => {{
-        let targetDate = "{target_yyyy_mm_dd}";
-        let maxFlips = 6;
-        
-        for (let i = 0; i < maxFlips; i++) {{
-            let cell = document.querySelector(`div[data-date="${{targetDate}}"]`);
-            if (cell) {{
-                let btn = cell.closest('button') || cell;
-                btn.click();
-                btn.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true }}));
-                return true;
-            }}
+    date_clicked = False
+    for month_flip in range(6):
+        target_cell = page.locator(f"div[data-date='{target_yyyy_mm_dd}']")
+        if target_cell.count() > 0 and target_cell.first.is_visible():
+            target_cell.first.click(force=True)
+            date_clicked = True
+            break
             
-            let nextBtn = document.querySelector('button.rdrNextButton, button[class*="next"], button[class*="Next"]');
-            if (nextBtn) {{
-                nextBtn.click();
-                await new Promise(r => setTimeout(r, 900)); // Wait for React re-render
-            }} else {{
-                break;
-            }}
-        }}
-        return false;
-    }}
-    """
-    
-    date_clicked = page.evaluate(js_calendar_nav)
+        next_btn_icon = page.locator("button.rdrNextButton:nth-of-type(2) i, button[aria-label='Next Month'] i").first
+        if next_btn_icon.is_visible():
+            next_btn_icon.click(force=True)
+            time.sleep(1.5)  
+        else:
+            clicked_js = page.evaluate("""() => {
+                let btn = document.querySelector('button.rdrNextButton:nth-of-type(2) i') || document.querySelector('button[aria-label="Next Month"] i');
+                if (btn) { btn.click(); return true; }
+                return false;
+            }""")
+            if not clicked_js:
+                break
+            time.sleep(1.5)
+
     if not date_clicked:
         raise RuntimeError(f"Could not locate calendar day {target_yyyy_mm_dd} in picker.")
     time.sleep(1.2)
 
     # 5. Submit Search
     print("🚀 Submitting Search...")
-    page.locator("div[class*='search-btn'] button, button.skyplus-button--filled-primary").first.click(force=True)
+    page.locator("button.skyplus-button--filled-primary").first.click(force=True)
 
-    # 6. Wait for Results Page
+    # 6. Wait for Results Page & Prices to Render
     print("⏳ Waiting for flight selection page...")
-    
     try:
-        page.wait_for_selector(".fare-accordion, div[class*='fare-accordion'], .no-flights-found", timeout=45000)
+        page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card']", timeout=45000)
     except:
         pass
         
     time.sleep(3)
-    
-    body_text = page.locator("body").inner_text().lower()
-    if "no flights found" in body_text or "sold out" in body_text:
-        print(f"ℹ️ IndiGo returned no flights for T+{window_days}. Logging NULL.")
-        return "EMPTY"
 
     print("📜 Scrolling to load all rendered flight cards...")
     for _ in range(6):
@@ -164,11 +152,16 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     js_extract = f"""
     () => {{
         let records = [];
-        let cards = document.querySelectorAll('.fare-accordion, div[class*="fare-accordion"]');
+        let cards = document.querySelectorAll('div[class*="fare-accordion"], div[class*="srp__search-result"], div[class*="flight-card"], div[class*="card-item"]');
+        
+        if (cards.length === 0) {{
+            let allDivs = document.querySelectorAll('div');
+            cards = Array.from(allDivs).filter(d => /6E[-\\s]?\\d{{3,4}}/i.test(d.innerText) && d.innerText.includes('₹'));
+        }}
 
         cards.forEach(card => {{
             let cardText = card.innerText || "";
-            let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+            if (!cardText.includes('₹') && !cardText.includes('Rs')) return;
 
             let flightNumEl = card.querySelector('.flight-number, div[class*="flight-number"]');
             let flightNum = flightNumEl ? flightNumEl.innerText.replace(/\\s+/g, ' ').trim() : "";
@@ -198,7 +191,19 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
         return records;
     }}
     """
+    
     raw_flights = page.evaluate(js_extract)
+
+    # If extraction found zero flights, double-check if it's genuinely a "No flights found" page
+    if not raw_flights:
+        page_text = page.locator("body").inner_text().lower()
+        if "no flights found" in page_text or "we are unable to find flights" in page_text:
+            print(f"ℹ️ IndiGo officially returned no flights for T+{window_days}. Logging NULL.")
+            return "EMPTY"
+        else:
+            print("⚠️ Elements found but extraction missed them. Retrying scroll/extract once...")
+            time.sleep(2)
+            raw_flights = page.evaluate(js_extract)
 
     unique_flights = {}
     for f in raw_flights:
@@ -221,6 +226,9 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
             }
 
     flight_list = list(unique_flights.values())
+    if not flight_list:
+        return "EMPTY"
+        
     print(f"✅ Extracted {len(flight_list)} direct IndiGo flights!")
     return flight_list
 
@@ -261,10 +269,14 @@ def run_indigo_pipeline():
                 print(f"🛫 STARTING ROUTE: {route}")
                 print(f"==================================================")
                 
+                scraped_any_window = False
+
                 for window in advance_windows:
                     if is_already_scraped(route, window, "IndiGo Direct"):
                         print(f"⏩ IndiGo: {route} | T+{window} already collected today. Skipping.")
                         continue
+                    
+                    scraped_any_window = True
 
                     try:
                         records = scrape_indigo_route(page, origin, dest, window)
@@ -284,7 +296,7 @@ def run_indigo_pipeline():
                                 conn.execute('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
                                     VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
-                                ''', ("IndiGo", route, window, "IndiGo Direct"))
+                                ''', ("IndiGo", route, window, "IndiGo Direct", None))
                             elif records:
                                 rows = [
                                     (
@@ -311,9 +323,13 @@ def run_indigo_pipeline():
                     print(f"⏳ Cooling down for {round(jitter, 1)}s...")
                     time.sleep(jitter)
                 
-                route_jitter = random.uniform(10.0, 15.0)
-                print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
-                time.sleep(route_jitter)
+                # Only apply the long route cooldown if we actually hit the web pages
+                if scraped_any_window:
+                    route_jitter = random.uniform(10.0, 15.0)
+                    print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
+                    time.sleep(route_jitter)
+                else:
+                    print(f"\n⏩ Route {route} completely skipped (already scraped). Moving immediately to next.")
                 
         finally:
             context.close()

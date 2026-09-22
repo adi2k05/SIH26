@@ -59,9 +59,23 @@ def dismiss_overlays(driver):
     except:
         pass
 
+def check_for_block(driver):
+    """Detects if MMT WAF has thrown the Network Problem firewall page."""
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        if "network problem" in body_text or "unable to connect to our systems" in body_text:
+            return True
+    except:
+        pass
+    return False
+
 def perform_ui_warmup(driver, wait, origin, dest, aria_date_str):
     print("Performing UI Warmup (Bypassing Network Block)...")
     driver.get("https://www.makemytrip.com/")
+    time.sleep(3)
+    
+    if check_for_block(driver):
+        raise Exception("WAF Block (Network Problem) triggered on homepage warmup.")
     
     # Non-blocking 6-7 second modal check window
     print("Checking for initial dynamic promo modal (up to 7s)...")
@@ -80,7 +94,6 @@ def perform_ui_warmup(driver, wait, origin, dest, aria_date_str):
             pass
         time.sleep(0.5)
         
-    # FIXED: Passed 'driver' correctly here
     dismiss_overlays(driver)
     time.sleep(1)
 
@@ -152,34 +165,45 @@ def run_mmt_multi_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching MakeMyTrip Pipeline Scraper (Hybrid Warmup Mode)...")
+    print("Launching MakeMyTrip Pipeline Scraper (Anti-WAF Persistent Profile Mode)...")
+    user_data_dir = os.path.join(os.getcwd(), "mmt_browser_profile")
 
-    for route in top_20_routes:
+    for route_idx, route in enumerate(top_20_routes):
         origin, dest = route.split("-")
+        
+        # Check if all windows are already scraped before spinning up browser
+        all_done = all(is_already_scraped(route, w, "MakeMyTrip") for w in advance_windows)
+        if all_done:
+            print(f"\n⏩ Route {route} completely skipped (already collected today). Moving immediately to next.")
+            continue
+
         print(f"\n==================================================")
-        print(f"🛫 STARTING ROUTE: {route}")
+        print(f"🛫 STARTING ROUTE [{route_idx+1}/20]: {route}")
         print(f"==================================================")
         
-        options = uc.ChromeOptions()
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--start-maximized")
-        
-        # Background Performance Flags to prevent throttling
-        options.add_argument("--disable-background-timer-throttling")
-        options.add_argument("--disable-backgrounding-occluded-windows")
-        options.add_argument("--disable-renderer-backgrounding")
-        
-        driver = uc.Chrome(options=options)
-        wait = WebDriverWait(driver, 35)
-        
-        session_warmed_up = False
-
+        driver = None
         try:
+            options = uc.ChromeOptions()
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--start-maximized")
+            options.add_argument(f"--user-data-dir={user_data_dir}")
+            
+            options.add_argument("--disable-background-timer-throttling")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-renderer-backgrounding")
+            
+            driver = uc.Chrome(options=options, use_subprocess=True)
+            wait = WebDriverWait(driver, 35)
+            
+            session_warmed_up = False
+            scraped_any_window = False
+
             for window in advance_windows:
                 if is_already_scraped(route, window, "MakeMyTrip"):
                     print(f"⏩ MMT: {route} | T+{window} already collected today. Skipping.")
                     continue
 
+                scraped_any_window = True
                 target_date = datetime.now() + timedelta(days=window)
                 aria_date_str = target_date.strftime("%a %b %d %Y")
                 url_date = target_date.strftime("%d/%m/%Y")
@@ -195,7 +219,10 @@ def run_mmt_multi_scraper():
                         else:
                             direct_url = f"https://www.makemytrip.com/flight/search?itinerary={origin}-{dest}-{url_date}&tripType=O&paxType=A-1_C-0_I-0&intl=false&cabinClass=E&lang=eng"
                             driver.get(direct_url)
-                            time.sleep(3)
+                            time.sleep(4)
+                            
+                        if check_for_block(driver):
+                            raise Exception("WAF Block (Network Problem) triggered on search URL.")
                             
                         dismiss_overlays(driver)
                         print("Waiting for flight cards to render...")
@@ -295,23 +322,37 @@ def run_mmt_multi_scraper():
                     except Exception as e:
                         print(f"⚠️ Attempt {attempt} failed: {e}")
                         session_warmed_up = False 
+                        if "Network Problem" in str(e) or "WAF Block" in str(e):
+                            print("🛡️ WAF Firewall Block detected! Quitting driver early and cooling down...")
+                            break
                         if attempt == 1:
                             time.sleep(5)
                 
-                jitter = random.uniform(4.0, 8.0)
-                print(f"⏳ Cooling down for {round(jitter, 1)}s...")
-                time.sleep(jitter)
+                if success:
+                    jitter = random.uniform(5.0, 9.0)
+                    print(f"⏳ Cooling down for {round(jitter, 1)}s...")
+                    time.sleep(jitter)
+
+            if scraped_any_window:
+                route_jitter = random.uniform(12.0, 18.0)
+                print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
+                time.sleep(route_jitter)
 
         except Exception as e:
             print(f"❌ Route Scrape failed. Exception: {e}")
             traceback.print_exc()
         finally:
-            try:
-                driver.quit()
-            except:
-                pass
+            if driver:
+                try:
+                    driver.quit()
+                except:
+                    pass
             
-        time.sleep(random.uniform(8.0, 12.0))
+            # Anti-bot safety break: Between every single route, rest for 15-25 seconds to keep IP clean
+            if route_idx < len(top_20_routes) - 1:
+                safety_sleep = random.uniform(15.0, 25.0)
+                print(f"🛡️ Anti-Bot Safety Rest: Pausing for {round(safety_sleep, 1)}s before launching next route session...")
+                time.sleep(safety_sleep)
 
     print("\n🎉 MakeMyTrip Batch Scraping Complete!")
 

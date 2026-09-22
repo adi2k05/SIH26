@@ -184,6 +184,9 @@ cython_debug/
 cleartrip_browser_profile/
 indigo_browser_profile/
 akasa_browser_profile/
+mmt_browser_profile/
+goibibo_browser_profile/
+
 
 *.png
 
