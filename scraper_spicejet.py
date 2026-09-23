@@ -2,7 +2,6 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from datetime import datetime, timedelta
 import sqlite3
-import re
 import time
 import os
 
@@ -28,7 +27,7 @@ def run_spicejet_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching SpiceJet Multi-Route Scraper (Resilient Mode)...")
+    print("Launching SpiceJet Multi-Route Scraper (Deep-Card Isolation Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -76,8 +75,8 @@ def run_spicejet_scraper():
                             print(f"ℹ️ SpiceJet does not operate flights on {route} for T+{window}.")
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.execute('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source,departure_time)
-                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL)
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)
                                 ''', ("SpiceJet", route, window, "SpiceJet Direct"))
                                 conn.commit()
                             page.close()
@@ -93,18 +92,74 @@ def run_spicejet_scraper():
                             pass
                         page.wait_for_timeout(1500)
                         
-                        lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
-                        fares = [int(re.sub(r'[^\d]', '', l)) for l in lines if ('₹' in l or 'Rs' in l) and re.sub(r'[^\d]', '', l)]
-                        valid_fares = [f for f in fares if 1500 < f < 75000]
+                        # --- ROBUST DEEP-CARD EXTRACTION ---
+                        valid_flights = page.evaluate("""() => {
+                            let records = [];
+                            let allDivs = document.querySelectorAll('div');
+                            
+                            // 1. Find all divs that contain flight info
+                            let potentialCards = Array.from(allDivs).filter(d => {
+                                let t = d.innerText || "";
+                                return /SG\\s*\\d{3,4}/i.test(t) && (t.includes('Direct') || t.includes('Non-stop')) && (t.includes('₹') || t.includes('Rs'));
+                            });
+
+                            // 2. ISOLATION FIX: Only keep the deepest divs (reject parent wrappers that include the calendar)
+                            let exactCards = potentialCards.filter(card => {
+                                let childDivs = Array.from(card.querySelectorAll('div'));
+                                return !childDivs.some(child => potentialCards.includes(child));
+                            });
+
+                            // 3. Extract purely from the isolated flight row
+                            exactCards.forEach(card => {
+                                let text = card.innerText || "";
+                                
+                                let flightMatch = text.match(/SG\\s*(\\d{3,4})/i);
+                                let flightNo = flightMatch ? ("SG-" + flightMatch[1]) : "";
+
+                                let times = text.match(/\\b(\\d{2}:\\d{2})\\b/g) || [];
+                                let depTime = times.length > 0 ? times[0] : "";
+
+                                let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
+                                let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
+
+                                if (flightNo && cleanPrices.length > 0) {
+                                    records.push({
+                                        flight_no: flightNo,
+                                        departure_time: depTime,
+                                        fare: Math.min(...cleanPrices)
+                                    });
+                                }
+                            });
+
+                            // 4. Deduplicate
+                            let unique = {};
+                            records.forEach(r => {
+                                let key = r.flight_no + "_" + r.departure_time;
+                                if (!unique[key] || r.fare < unique[key].fare) {
+                                    unique[key] = r;
+                                }
+                            });
+                            return Object.values(unique);
+                        }""")
                         
-                        if valid_fares:
+                        if valid_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', [("SpiceJet", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "SpiceJet Direct", f"T{idx+1}") for idx, f in enumerate(valid_fares)])
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', [(
+                                    "SpiceJet", 
+                                    route, 
+                                    window, 
+                                    round(f['fare'] * 0.85, 2), 
+                                    round(f['fare'] * 0.15, 2), 
+                                    f['fare'], 
+                                    "SpiceJet Direct", 
+                                    f['departure_time'], 
+                                    f['flight_no']
+                                ) for f in valid_flights])
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_fares)} direct records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(valid_flights)} direct records (Attempt {attempt}).")
                             page.close()
                             break
                         else:

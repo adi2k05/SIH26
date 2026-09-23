@@ -1,195 +1,222 @@
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.common.action_chains import ActionChains
+from patchright.sync_api import sync_playwright
 from datetime import datetime, timedelta
-import sqlite3
-import json
+import re
 import time
-import os
 
-def is_already_scraped(route, window, source):
-    if os.environ.get("FORCE_RESCRAPE") == "1":
-        return False
-    with sqlite3.connect('airfare_index.db') as conn:
-        c = conn.cursor()
-        c.execute("""
-            SELECT COUNT(*) FROM raw_fares 
-            WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-            AND date(timestamp) = date('now')
-        """, (route, window, source))
-        return c.fetchone()[0] > 0
+TOP_20_ROUTES = [
+    "DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL",
+    "BOM-BLR", "BLR-BOM", "DEL-HYD", "HYD-DEL",
+    "DEL-CCU", "CCU-DEL", "DEL-GOI", "BOM-GOI",
+    "DEL-MAA", "MAA-DEL", "BOM-MAA", "MAA-BOM",
+    "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
+]
 
-def run_goibibo_scraper():
-    advance_windows = [1, 7, 15, 30, 45]
-    top_20_routes = [
-        "DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL", 
-        "BOM-BLR", "BLR-BOM", "DEL-HYD", "HYD-DEL", 
-        "DEL-CCU", "CCU-DEL", "DEL-GOI", "BOM-GOI", 
-        "DEL-MAA", "MAA-DEL", "BOM-MAA", "MAA-BOM", 
-        "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
-    ]
+ADVANCE_WINDOWS = [1, 7, 15, 30, 45]
 
-    print("Launching Goibibo API Sniffer (React Autosuggest Mode)...")
 
-    options = uc.ChromeOptions()
-    options.add_argument("--window-size=1920,1080")
-    options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    
-    try:
-        driver = uc.Chrome(options=options)
-        uc.Chrome.__del__ = lambda self: None 
-    except Exception as e:
-        print(f"Error launching Chrome: {e}")
-        return
+def extract_flights(page, origin, dest):
+    cards = page.evaluate('''() => {
+        const btns = Array.from(document.querySelectorAll('*')).filter(
+            e => e.textContent.trim() === 'Flight Details' && e.offsetParent !== null && e.children.length === 0
+        );
+        return btns.map(b => {
+            let card = b;
+            for (let i = 0; i < 12; i++) { if (card.parentElement) card = card.parentElement; }
+            return card.innerText;
+        });
+    }''')
 
-    for route in top_20_routes:
-        origin, dest = route.split("-")
-        
-        for window in advance_windows:
-            if is_already_scraped(route, window, "Goibibo"):
-                print(f"⏩ Goibibo: {route} | T+{window} already collected today. Skipping.")
-                continue
+    results = []
+    seen_flight_numbers = set()
+    for raw in cards:
+        lines = [l.strip() for l in raw.split('\n') if l.strip()]
 
-            future_date_obj = datetime.now() + timedelta(days=window)
-            target_month_year = future_date_obj.strftime("%B %Y")
-            target_date_label = future_date_obj.strftime("%b %d %Y")
+        fn_idx = next((i for i, l in enumerate(lines) if re.match(r'^AI\s?\d{2,5}$', l)), None)
+        if fn_idx is None:
+            continue
+        flight_number = lines[fn_idx]
+        if flight_number in seen_flight_numbers:
+            continue
 
-            print(f"\n--- Goibibo API Sniffing: {route} | T+{window} Days ({target_date_label}) ---")
+        dep_time = next((l for l in lines[fn_idx:] if re.match(r'^\d{2}:\d{2}$', l)), None)
+        if not dep_time:
+            continue
 
-            for attempt in range(1, 3):
-                try:
-                    driver.get("https://www.goibibo.com/")
-                    wait = WebDriverWait(driver, 10)
-                    time.sleep(4)
-                    
-                    # 1. Force kill the Login/Signup popup & click away
-                    ActionChains(driver).send_keys(Keys.ESCAPE).perform()
-                    time.sleep(1)
-                    ActionChains(driver).move_by_offset(5, 5).click().perform()
-                    time.sleep(1)
+        if "Non-stop" not in lines:
+            continue  # exclude connections — a single departure_time can't represent them
 
-                    # 2. Click the 'From' dummy box to trigger the React popup
-                    from_dummy = wait.until(EC.element_to_be_clickable((By.XPATH, "//span[text()='From'] | //p[text()='Enter city or airport']")))
-                    from_dummy.click()
-                    time.sleep(1.5)
+        if origin not in lines or dest not in lines:
+            continue  # skip alternate/nearby-airport arrivals (e.g. NMI instead of BOM)
 
-                    # 3. Locate the REAL (non-readonly) input injected by React and type Origin
-                    real_input = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='text' and not(@readonly)]")))
-                    real_input.send_keys(origin)
-                    time.sleep(1.5)
-                    
-                    # Wait for Goibibo's revamped autocomplete dropdown, then click the first item
-                    dropdown_items = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//ul[@id='autoSuggest-list']//li | //li[contains(@class, 'react-autosuggest__suggestion')] | //div[contains(@class, 'revampedSearchSuggestionItem')]")))
-                    dropdown_items[0].click()
-                    time.sleep(1)
+        if "INR" not in lines:
+            continue
+        inr_idx = lines.index("INR")
+        price_str = lines[inr_idx + 1] if len(lines) > inr_idx + 1 else None
+        if not price_str or not re.match(r'^[\d,]+$', price_str):
+            continue
+        total_fare = float(price_str.replace(",", ""))
+        if not (1500 < total_fare < 75000):
+            continue
 
-                    # 4. The 'To' popup usually opens automatically. Find the active real input and type Destination.
-                    real_input = wait.until(EC.element_to_be_clickable((By.XPATH, "//input[@type='text' and not(@readonly)]")))
-                    real_input.send_keys(dest)
-                    time.sleep(1.5)
-                    
-                    dropdown_items = wait.until(EC.presence_of_all_elements_located((By.XPATH, "//ul[@id='autoSuggest-list']//li | //li[contains(@class, 'react-autosuggest__suggestion')] | //div[contains(@class, 'revampedSearchSuggestionItem')]")))
-                    dropdown_items[0].click()
-                    time.sleep(1)
+        seen_flight_numbers.add(flight_number)
+        results.append({
+            "airline": "Air India",
+            "route": f"{origin}-{dest}",
+            "base_fare": round(total_fare * 0.85, 2),
+            "taxes_fees": round(total_fare * 0.15, 2),
+            "total_fare": total_fare,
+            "ota_source": "Air India Direct",
+            "departure_time": dep_time
+        })
 
-                    # 5. Native Calendar Selection
-                    for _ in range(8):
-                        month_headers = driver.find_elements(By.XPATH, f"//div[contains(text(), '{target_month_year}')]")
-                        if month_headers and month_headers[0].is_displayed():
+    return results
+
+
+def run_airindia_scraper():
+    arr = []
+
+    print("Launching Air India Multi-Route Scraper (List Mode, all flights/day)...")
+
+    with sync_playwright() as p:
+        browser = p.chromium.launch(channel="chrome", headless=False)
+
+        for route in TOP_20_ROUTES:
+            origin, dest = route.split("-")
+
+            for window in ADVANCE_WINDOWS:
+                future_date_obj = datetime.now() + timedelta(days=window)
+                target_aria = f"{future_date_obj.month}/{future_date_obj.day}/{future_date_obj.year}"
+                print(f"\n--- Air India Scraping: {route} | T+{window} Days ({future_date_obj.strftime('%d/%m/%Y')}) ---")
+
+                found_any = False
+                for attempt in range(1, 3):
+                    # A fresh context per attempt avoids resource/connection-pool buildup
+                    # from reusing one long-lived context across 100+ navigations.
+                    context = browser.new_context(viewport={"width": 1920, "height": 1080})
+                    page = context.new_page()
+                    try:
+                        page.goto("https://www.airindia.com/", wait_until="domcontentloaded", timeout=60000)
+                        page.wait_for_timeout(9000)
+
+                        try:
+                            page.get_by_text("Accept All", exact=True).first.click(timeout=6000)
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(1500)
+
+                        try:
+                            page.locator('#simplifiedLoginModal button.btn-close').first.click(timeout=4000)
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(500)
+
+                        page.get_by_text("One Way", exact=True).first.click(timeout=6000)
+                        page.wait_for_timeout(500)
+
+                        origin_input = page.locator('input.ai-autocomplete-input').nth(0)
+                        origin_input.click()
+                        page.keyboard.press("Control+A")
+                        page.keyboard.press("Backspace")
+                        page.wait_for_timeout(300)
+                        page.keyboard.type(origin, delay=150)
+                        page.wait_for_timeout(2500)
+                        page.locator("mat-option").first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
+
+                        dest_input = page.locator('input.ai-autocomplete-input').nth(1)
+                        dest_input.click()
+                        page.wait_for_timeout(300)
+                        page.keyboard.type(dest, delay=150)
+                        page.wait_for_timeout(2500)
+                        page.locator("mat-option").first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
+
+                        page.get_by_text("Select Date", exact=True).first.click(timeout=6000)
+                        page.wait_for_timeout(1500)
+
+                        for _ in range(4):
+                            if page.locator(f'button.mat-calendar-body-cell[aria-label="{target_aria}"]').count() > 0:
+                                break
+                            page.get_by_role("button", name="Next month").first.click()
+                            page.wait_for_timeout(700)
+
+                        page.locator(f'button.mat-calendar-body-cell[aria-label="{target_aria}"]').first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
+
+                        page.get_by_role("button", name="Search", exact=True).first.click(timeout=8000)
+
+                        flights_loaded = False
+                        no_flights_scheduled = False
+                        for _ in range(20):
+                            body_text = page.locator("body").inner_text()
+                            if "SOMETHING WENT WRONG" in body_text.upper():
+                                raise Exception("Air India results page threw its frontend error.")
+                            if "no flights" in body_text.lower() or "sorry" in body_text.lower():
+                                no_flights_scheduled = True
+                                break
+                            if "Flight Details" in body_text:
+                                flights_loaded = True
+                                break
+                            page.wait_for_timeout(1000)
+
+                        if no_flights_scheduled:
+                            print(f"ℹ️ Air India does not operate flights on {route} for T+{window}.")
+                            arr.append({
+                                "airline": "Air India",
+                                "route": route,
+                                "advance_window_days": window,
+                                "base_fare": None,
+                                "taxes_fees": None,
+                                "total_fare": None,
+                                "ota_source": "Air India Direct",
+                                "departure_time": None
+                            })
+                            found_any = True
+                            context.close()
                             break
-                        
-                        next_btn = driver.find_elements(By.XPATH, "//span[@aria-label='Next Month'] | //div[contains(@class, 'DayPicker-NavButton--next')]")
-                        if next_btn:
-                            next_btn[0].click()
-                        time.sleep(0.5)
 
-                    date_element = wait.until(EC.element_to_be_clickable((By.XPATH, f"//div[contains(@aria-label, '{target_date_label}')]")))
-                    date_element.click()
-                    time.sleep(1)
+                        if not flights_loaded:
+                            raise Exception("Flight list never rendered.")
 
-                    # 6. Flush logs & trigger Search
-                    driver.get_log("performance")
-                    search_btn = driver.find_elements(By.XPATH, "//span[text()='SEARCH'] | //a[contains(@class, 'widgetSearchBtn')] | //span[contains(@class, 'widgetSearchBtn')]")
-                    if search_btn:
-                        search_btn[0].click()
+                        page.wait_for_timeout(1500)
+                        flights = extract_flights(page, origin, dest)
 
-                    print("Waiting for Goibibo backend JSON API response via CDP...")
-                    
-                    # 7. CDP Log Polling Loop
-                    valid_fares = []
-                    for _ in range(25):
-                        logs = driver.get_log("performance")
-                        for log in logs:
-                            try:
-                                message = json.loads(log["message"])["message"]
-                                if message["method"] == "Network.responseReceived":
-                                    mime_type = message["params"]["response"]["mimeType"]
-                                    
-                                    if "application/json" in mime_type:
-                                        request_id = message["params"]["requestId"]
-                                        res = driver.execute_cdp_cmd("Network.getResponseBody", {"requestId": request_id})
-                                        payload_str = res.get("body", "")
-                                        
-                                        if "onwardflights" in payload_str or "totalfare" in payload_str.lower():
-                                            data = json.loads(payload_str)
-                                            flights_list = data.get("data", {}).get("onwardflights", [])
-                                            
-                                            for f in flights_list:
-                                                airline = f.get("airline") or f.get("carrier", {}).get("name") or "Goibibo Partner"
-                                                fare_node = f.get("fare") or f.get("price") or {}
-                                                total = fare_node.get("totalfare") or fare_node.get("totalPrice")
-                                                
-                                                if total and 1500 < float(total) < 75000:
-                                                    base = fare_node.get("basefare") or (float(total) * 0.85)
-                                                    tax = fare_node.get("taxes") or (float(total) * 0.15)
-                                                    
-                                                    valid_fares.append((
-                                                        airline, route, window,
-                                                        round(float(base), 2), round(float(tax), 2), float(total),
-                                                        "Goibibo"
-                                                    ))
-                            except Exception:
-                                continue
-                                
-                        if valid_fares:
-                            break 
-                            
-                        time.sleep(1.5)
+                        if flights:
+                            for f in flights:
+                                f["advance_window_days"] = window
+                            arr.extend(flights)
+                            print(f"✅ Air India: {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).")
+                            found_any = True
+                            context.close()
+                            break
+                        else:
+                            raise Exception("Zero valid non-stop flights parsed from card texts.")
 
-                    if not valid_fares:
-                        raise Exception("Failed to intercept JSON API payload after clicking SEARCH.")
+                    except Exception as e:
+                        print(f"⚠️ Air India {route} T+{window} Attempt {attempt} failed: {e}")
+                        context.close()
+                        if attempt == 1:
+                            time.sleep(8)
 
-                    unique_batch = list(set(valid_fares))
-                    
-                    with sqlite3.connect('airfare_index.db') as conn:
-                        conn.executemany('''
-                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source)
-                            VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ''', unique_batch)
-                        conn.commit()
+                if not found_any:
+                    print(f"ℹ️ Air India: {route} | T+{window} yielded no data after retries.")
 
-                    print(f"✅ Intercepted {len(unique_batch)} distinct records directly from backend JSON (Attempt {attempt}).")
-                    break
+                # A longer pause between combos gives Air India's backend breathing room —
+                # hitting it every ~2s with minimal spacing was correlating with consecutive
+                # failures that didn't reproduce in isolated, naturally-spaced-out requests.
+                time.sleep(8)
 
-                except Exception as e:
-                    print(f"⚠️ Goibibo Attempt {attempt} failed: {e}")
-                    if "invalid session id" in str(e).lower() or "disconnected" in str(e).lower():
-                        driver.quit()
-                        driver = uc.Chrome(options=options)
-                    if attempt == 1:
-                        time.sleep(3)
-                        
-            time.sleep(2)
+        browser.close()
 
-    try:
-        driver.quit()
-    except Exception:
-        pass
+    print("\n==========================================")
+    print("Air India In-Memory Scraping Complete!")
+    print(f"Total records stored: {len(arr)}")
+    print("==========================================")
+    for item in arr:
+        print(item)
 
-    print("\nGoibibo Database Scraping Complete!")
+    return arr
+
 
 if __name__ == "__main__":
-    run_goibibo_scraper()
+    run_airindia_scraper()
