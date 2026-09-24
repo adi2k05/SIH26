@@ -192,7 +192,11 @@ def run_mmt_multi_scraper():
             options.add_argument("--disable-backgrounding-occluded-windows")
             options.add_argument("--disable-renderer-backgrounding")
             
-            driver = uc.Chrome(options=options, use_subprocess=True)
+            driver = uc.Chrome(
+    options=options,
+    version_main=153,
+    use_subprocess=True
+)
             wait = WebDriverWait(driver, 35)
             
             session_warmed_up = False
