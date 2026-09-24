@@ -69,7 +69,7 @@ def check_for_block(driver):
         pass
     return False
 
-def perform_ui_warmup(driver, wait, origin, dest, aria_date_str):
+def perform_ui_warmup(driver, wait, origin, dest, target_date):
     print("Performing UI Warmup (Bypassing Network Block)...")
     driver.get("https://www.makemytrip.com/")
     time.sleep(3)
@@ -77,7 +77,6 @@ def perform_ui_warmup(driver, wait, origin, dest, aria_date_str):
     if check_for_block(driver):
         raise Exception("WAF Block (Network Problem) triggered on homepage warmup.")
     
-    # Non-blocking 6-7 second modal check window
     print("Checking for initial dynamic promo modal (up to 7s)...")
     modal_start = time.time()
     while time.time() - modal_start < 7.0:
@@ -130,22 +129,76 @@ def perform_ui_warmup(driver, wait, origin, dest, aria_date_str):
         raise Exception(f"No suggestions loaded for destination {dest}")
     time.sleep(1.5)
 
-    # 3. Pick Target Date
-    print(f"Selecting date: {aria_date_str}...")
+    # 3. Pick Target Date (Bi-Directional Logic)
+    target_month_short = target_date.strftime("%b")[:3]
+    target_month_full = target_date.strftime("%B")
+    target_day_zero = f"{target_date.day:02d}"
+    target_year = str(target_date.year)
+    
+    print(f"Selecting date: {target_month_short} {target_day_zero}, {target_year}...")
+    
     js_click_date = f"""
-        let cell = document.querySelector('div.DayPicker-Day[aria-label="{aria_date_str}"]');
-        if (cell) {{ cell.click(); return true; }}
+        let cells = document.querySelectorAll('.DayPicker-Day');
+        for (let c of cells) {{
+            let aria = c.getAttribute('aria-label');
+            if (aria) {{
+                let parts = aria.split(' '); 
+                if (parts.length >= 4) {{
+                    let cMonth = parts[1].substring(0,3); 
+                    let cDay = parts[2];
+                    let cYear = parts[3];
+                    
+                    if (cMonth === '{target_month_short}' && cYear === '{target_year}') {{
+                        if (cDay === '{target_day_zero}' || cDay === parseInt('{target_day_zero}').toString()) {{
+                            if (c.getAttribute('aria-disabled') === 'true') return false;
+                            
+                            let inner = c.querySelector('.dateInnerCell') || c;
+                            inner.click();
+                            return true;
+                        }}
+                    }}
+                }}
+            }}
+        }}
         return false;
     """
-    if not driver.execute_script(js_click_date):
-        departure_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="departure"]')))
-        ActionChains(driver).move_to_element(departure_label).click().perform()
-        time.sleep(1.5)
+
+    js_navigate_calendar = f"""
+        let targetTime = new Date('{target_month_full} 1, {target_year}').getTime();
+        let captions = document.querySelectorAll('.DayPicker-Caption > div');
         
-        for _ in range(3):
-            if driver.execute_script(js_click_date): break
-            driver.execute_script("let nextBtn = document.querySelector('span[aria-label=\"Next Month\"]'); if (nextBtn) nextBtn.click();")
-            time.sleep(1)
+        if (captions.length > 0) {{
+            // Clean extraction of the visible month text (e.g., "September 2026")
+            let visibleStr = captions[0].innerText.replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            let visibleTime = new Date(visibleStr.replace(' ', ' 1, ')).getTime();
+            
+            if (!isNaN(visibleTime) && targetTime < visibleTime) {{
+                let prevBtn = document.querySelector('span[aria-label="Previous Month"], .DayPicker-NavButton--prev');
+                if (prevBtn && prevBtn.getAttribute('aria-disabled') !== 'true') {{
+                    prevBtn.click();
+                    return;
+                }}
+            }}
+        }}
+        
+        let nextBtn = document.querySelector('span[aria-label="Next Month"], .DayPicker-NavButton--next'); 
+        if (nextBtn) nextBtn.click();
+    """
+    
+    if not driver.execute_script(js_click_date):
+        try:
+            departure_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="departure"]')))
+            ActionChains(driver).move_to_element(departure_label).click().perform()
+            time.sleep(1.5)
+        except:
+            pass
+        
+        # Give it up to 12 sliding attempts to reach the correct month
+        for _ in range(12):
+            if driver.execute_script(js_click_date):
+                break
+            driver.execute_script(js_navigate_calendar)
+            time.sleep(0.8)
             
     time.sleep(1.5)
 
@@ -171,7 +224,6 @@ def run_mmt_multi_scraper():
     for route_idx, route in enumerate(top_20_routes):
         origin, dest = route.split("-")
         
-        # Check if all windows are already scraped before spinning up browser
         all_done = all(is_already_scraped(route, w, "MakeMyTrip") for w in advance_windows)
         if all_done:
             print(f"\n⏩ Route {route} completely skipped (already collected today). Moving immediately to next.")
@@ -193,10 +245,10 @@ def run_mmt_multi_scraper():
             options.add_argument("--disable-renderer-backgrounding")
             
             driver = uc.Chrome(
-    options=options,
-    version_main=153,
-    use_subprocess=True
-)
+                options=options,
+                version_main=153,
+                use_subprocess=True
+            )
             wait = WebDriverWait(driver, 35)
             
             session_warmed_up = False
@@ -209,7 +261,6 @@ def run_mmt_multi_scraper():
 
                 scraped_any_window = True
                 target_date = datetime.now() + timedelta(days=window)
-                aria_date_str = target_date.strftime("%a %b %d %Y")
                 url_date = target_date.strftime("%d/%m/%Y")
                 
                 print(f"\n--- MMT Scraping: {route} | T+{window} Days ({url_date}) ---")
@@ -218,7 +269,7 @@ def run_mmt_multi_scraper():
                 for attempt in range(1, 3):
                     try:
                         if not session_warmed_up:
-                            perform_ui_warmup(driver, wait, origin, dest, aria_date_str)
+                            perform_ui_warmup(driver, wait, origin, dest, target_date)
                             session_warmed_up = True
                         else:
                             direct_url = f"https://www.makemytrip.com/flight/search?itinerary={origin}-{dest}-{url_date}&tripType=O&paxType=A-1_C-0_I-0&intl=false&cabinClass=E&lang=eng"
@@ -240,10 +291,16 @@ def run_mmt_multi_scraper():
                             cards.forEach(card => {{
                                 let lines = (card.innerText || "").split('\\n').map(l => l.trim()).filter(l => l.length > 0);
                                 
+                                // 1. Strict Origin & Destination Check
                                 let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b").test(l));
                                 let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b").test(l));
                                 if (!hasOrigin || !hasDest) return;
                                 
+                                // 2. Strict Non-Stop Check
+                                let isNonStop = lines.some(l => l.toLowerCase().includes('non-stop') || l.toLowerCase().includes('non stop'));
+                                if (!isNonStop) return;
+                                
+                                // 3. Extract Price
                                 let priceLine = lines.find(l => (l.includes('₹') || l.includes('Rs')) && /\\d/.test(l));
                                 if (!priceLine) return;
                                 
@@ -253,6 +310,7 @@ def run_mmt_multi_scraper():
                                 let cleanPrice = parseInt(priceMatch[1].replace(/,/g, ''));
                                 if (isNaN(cleanPrice) || cleanPrice < 1000) return;
                                 
+                                // 4. Extract Flight Number & Airline
                                 let flightNum = "";
                                 let airline = "Unknown";
                                 

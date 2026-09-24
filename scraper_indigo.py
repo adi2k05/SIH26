@@ -25,6 +25,10 @@ def suppress_winerror6_sys_excepthook(exc_type, exc_value, exc_traceback):
 sys.excepthook = suppress_winerror6_sys_excepthook
 # -----------------------------
 
+class SoftBlockException(Exception):
+    """Custom exception raised when IndiGo's WAF soft-blocks the session."""
+    pass
+
 def is_already_scraped(route, window, source):
     if os.environ.get("FORCE_RESCRAPE") == "1":
         return False
@@ -42,6 +46,21 @@ def is_already_scraped(route, window, source):
             return c.fetchone()[0] > 0
         except sqlite3.OperationalError:
             return False
+
+def launch_indigo_browser(p, user_data_dir):
+    """Helper function to cleanly launch/relaunch the browser context."""
+    return p.chromium.launch_persistent_context(
+        user_data_dir=user_data_dir,
+        channel="chrome",
+        headless=False,
+        viewport={"width": 1920, "height": 1080},
+        args=[
+            "--disable-blink-features=AutomationControlled",
+            "--start-maximized",
+            "--test-type"
+        ],
+        ignore_default_args=["--enable-automation"]
+    )
 
 def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     target_date = datetime.now() + timedelta(days=window_days)
@@ -137,11 +156,16 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     # 6. Wait for Results Page & Prices to Render
     print("⏳ Waiting for flight selection page...")
     try:
-        page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card']", timeout=45000)
+        # Wait for either valid cards OR the 'X' airplane soft-block image
+        page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card'], img[alt='no flight found']", timeout=45000)
     except:
         pass
         
     time.sleep(3)
+
+    # --- SOFT BLOCK DETECTION ---
+    if page.locator("img[alt='no flight found']").is_visible():
+        raise SoftBlockException("IndiGo WAF Soft Block (Airplane X icon) detected.")
 
     print("📜 Scrolling to load all rendered flight cards...")
     for _ in range(6):
@@ -194,10 +218,10 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     
     raw_flights = page.evaluate(js_extract)
 
-    # If extraction found zero flights, double-check if it's genuinely a "No flights found" page
+    # If extraction found zero flights, double-check if it's genuinely an empty matrix (no cards)
     if not raw_flights:
         page_text = page.locator("body").inner_text().lower()
-        if "no flights found" in page_text or "we are unable to find flights" in page_text:
+        if "we are unable to find flights" in page_text:
             print(f"ℹ️ IndiGo officially returned no flights for T+{window_days}. Logging NULL.")
             return "EMPTY"
         else:
@@ -243,23 +267,13 @@ def run_indigo_pipeline():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching IndiGo Pipeline Scraper (Full 20-Route Suite)...")
+    print("Launching IndiGo Pipeline Scraper (WAF Resilience Mode)...")
 
     user_data_dir = os.path.join(os.getcwd(), "indigo_browser_profile")
+    routes_processed = 0
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1920, "height": 1080},
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--start-maximized",
-                "--test-type"
-            ],
-            ignore_default_args=["--enable-automation"]
-        )
+        context = launch_indigo_browser(p, user_data_dir)
         page = context.pages[0] if context.pages else context.new_page()
 
         try:
@@ -277,62 +291,88 @@ def run_indigo_pipeline():
                         continue
                     
                     scraped_any_window = True
+                    success = False
 
-                    try:
-                        records = scrape_indigo_route(page, origin, dest, window)
-                        
-                        with sqlite3.connect("airfare_index.db") as conn:
-                            conn.execute("""
-                                CREATE TABLE IF NOT EXISTS raw_fares (
-                                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                                    airline TEXT, route TEXT, advance_window_days INTEGER,
-                                    base_fare REAL, taxes_fees REAL, total_fare REAL,
-                                    ota_source TEXT, departure_time TEXT, flight_no TEXT
-                                )
-                            """)
+                    for attempt in range(1, 3):
+                        try:
+                            records = scrape_indigo_route(page, origin, dest, window)
                             
-                            if records == "EMPTY":
-                                conn.execute('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
-                                ''', ("IndiGo", route, window, "IndiGo Direct", None))
-                            elif records:
-                                rows = [
-                                    (
-                                        r["airline"], r["route"], r["advance_window_days"],
-                                        r["base_fare"], r["taxes_fees"], r["total_fare"],
-                                        r["ota_source"], r["departure_time"], r["flight_number"]
+                            with sqlite3.connect("airfare_index.db") as conn:
+                                conn.execute("""
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER,
+                                        base_fare REAL, taxes_fees REAL, total_fare REAL,
+                                        ota_source TEXT, departure_time TEXT, flight_no TEXT
                                     )
-                                    for r in records
-                                ]
-                                conn.executemany("""
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                """, rows)
+                                """)
                                 
-                            conn.commit()
+                                if records == "EMPTY":
+                                    conn.execute('''
+                                        INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
+                                        VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
+                                    ''', ("IndiGo", route, window, "IndiGo Direct", None))
+                                elif records:
+                                    rows = [
+                                        (
+                                            r["airline"], r["route"], r["advance_window_days"],
+                                            r["base_fare"], r["taxes_fees"], r["total_fare"],
+                                            r["ota_source"], r["departure_time"], r["flight_number"]
+                                        )
+                                        for r in records
+                                    ]
+                                    conn.executemany("""
+                                        INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    """, rows)
+                                    
+                                conn.commit()
+                                
+                            if records != "EMPTY":
+                                print(f"💾 Successfully saved {len(records)} records for T+{window}.")
                             
-                        if records != "EMPTY":
-                            print(f"💾 Successfully saved {len(records)} records for T+{window}.")
+                            success = True
+                            break # Break out of attempt loop
+                                
+                        except SoftBlockException as e:
+                            print(f"🛡️ Soft block detected (Attempt {attempt})! Cooling down for 60s and restarting browser...")
+                            context.close()
+                            time.sleep(60)
+                            context = launch_indigo_browser(p, user_data_dir)
+                            page = context.pages[0] if context.pages else context.new_page()
                             
-                    except Exception as e:
-                        print(f"⚠️ Failed to scrape {route} (T+{window}): {e}")
+                        except Exception as e:
+                            print(f"⚠️ Failed to scrape {route} (T+{window}): {e}")
+                            if attempt == 1:
+                                time.sleep(5)
 
-                    jitter = random.uniform(4.0, 7.0)
-                    print(f"⏳ Cooling down for {round(jitter, 1)}s...")
-                    time.sleep(jitter)
+                    if success:
+                        jitter = random.uniform(4.0, 7.0)
+                        print(f"⏳ Cooling down for {round(jitter, 1)}s...")
+                        time.sleep(jitter)
                 
-                # Only apply the long route cooldown if we actually hit the web pages
                 if scraped_any_window:
+                    routes_processed += 1
                     route_jitter = random.uniform(10.0, 15.0)
                     print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
                     time.sleep(route_jitter)
+                    
+                    # --- METHOD 1: BATCH RESTART ---
+                    if routes_processed > 0 and routes_processed % 3 == 0:
+                        print("\n🔄 Batch limit reached (3 routes). Restarting browser to drop WAF tracking...")
+                        context.close()
+                        time.sleep(10)
+                        context = launch_indigo_browser(p, user_data_dir)
+                        page = context.pages[0] if context.pages else context.new_page()
                 else:
                     print(f"\n⏩ Route {route} completely skipped (already scraped). Moving immediately to next.")
                 
         finally:
-            context.close()
+            try:
+                context.close()
+            except:
+                pass
 
     print("\n🎉 IndiGo Pipeline Batch Scraping Complete!")
 

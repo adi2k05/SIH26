@@ -1,25 +1,39 @@
 import sqlite3
 
-def clean_indigo_null_records():
-    db_path = 'airfare_index.db'
-    target_date = '2026-09-22'  # Today's date (IST)
-    
-    print("Connecting to database to clean NULL IndiGo records...")
-    
-    with sqlite3.connect(db_path) as conn:
-        c = conn.cursor()
-        
-        # Deletes records where ota_source is 'IndiGo Direct', total_fare is NULL, and they were scraped today
-        c.execute("""
-            DELETE FROM raw_fares 
-            WHERE ota_source = ? 
-              AND total_fare IS NULL 
-              AND date(timestamp) = ?
-        """, ("IndiGo Direct", target_date))
-        
-        count = c.rowcount
-        conn.commit()
-        print(f"🧹 Successfully deleted {count} NULL IndiGo record(s) from {target_date}.")
+def cleanup_mmt_data():
+    db_name = 'airfare_index.db'
+    target_date = '2026-09-24'
+    target_ota = 'MakeMyTrip'
+
+    print(f"Scanning for errored {target_ota} records on {target_date}...")
+
+    try:
+        with sqlite3.connect(db_name) as conn:
+            c = conn.cursor()
+            
+            # Check how many records match the criteria before deleting
+            c.execute("""
+                SELECT COUNT(*) FROM raw_fares 
+                WHERE ota_source = ? AND date(timestamp) = ?
+            """, (target_ota, target_date))
+            
+            count = c.fetchone()[0]
+            
+            if count > 0:
+                # Perform the deletion
+                c.execute("""
+                    DELETE FROM raw_fares 
+                    WHERE ota_source = ? AND date(timestamp) = ?
+                """, (target_ota, target_date))
+                conn.commit()
+                print(f"✅ Successfully deleted {count} records.")
+            else:
+                print("ℹ️ No matching records found. Database is already clean.")
+                
+    except sqlite3.OperationalError as e:
+        print(f"⚠️ Database error: {e} (The table might not exist yet).")
+    except Exception as e:
+        print(f"❌ An error occurred: {e}")
 
 if __name__ == "__main__":
-    clean_indigo_null_records()
+    cleanup_mmt_data()
