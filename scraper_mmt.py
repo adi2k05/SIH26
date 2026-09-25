@@ -69,6 +69,19 @@ def check_for_block(driver):
         pass
     return False
 
+def clear_browser_data(driver):
+    """MINIMAL WAF FIX: Purges poisoned Akamai cookies and storage via CDP."""
+    try:
+        driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+        driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+        driver.execute_cdp_cmd('Storage.clearDataForOrigin', {
+            "origin": "https://www.makemytrip.com",
+            "storageTypes": "all"
+        })
+        print("🧹 CDP: Cleared poisoned browser session storage and Akamai cookies.")
+    except Exception as e:
+        pass
+
 def perform_ui_warmup(driver, wait, origin, dest, target_date):
     print("Performing UI Warmup (Bypassing Network Block)...")
     driver.get("https://www.makemytrip.com/")
@@ -385,7 +398,9 @@ def run_mmt_multi_scraper():
                         print(f"⚠️ Attempt {attempt} failed: {e}")
                         session_warmed_up = False 
                         if "Network Problem" in str(e) or "WAF Block" in str(e):
-                            print("🛡️ WAF Firewall Block detected! Quitting driver early and cooling down...")
+                            print("🛡️ WAF Firewall Block detected! Engaging CDP purge...")
+                            clear_browser_data(driver)
+                            time.sleep(2)
                             break
                         if attempt == 1:
                             time.sleep(5)
@@ -406,6 +421,7 @@ def run_mmt_multi_scraper():
         finally:
             if driver:
                 try:
+                    clear_browser_data(driver)
                     driver.quit()
                 except:
                     pass

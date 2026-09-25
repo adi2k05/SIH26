@@ -6,6 +6,7 @@ import time
 import os
 import sys
 import threading
+import shutil  # Added for cache cleaning
 
 # --- HOTFIX FOR WinError 6 ---
 original_excepthook = threading.excepthook
@@ -28,6 +29,15 @@ sys.excepthook = suppress_winerror6_sys_excepthook
 class SoftBlockException(Exception):
     """Custom exception raised when IndiGo's WAF soft-blocks the session."""
     pass
+
+def reset_profile_directory(profile_dir):
+    """Nukes the user profile directory to eliminate tracking history upon block."""
+    if os.path.exists(profile_dir):
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            print("🗑️ Reset IndiGo profile directory for a clean fingerprint.")
+        except Exception as e:
+            print(f"⚠️ Failed to delete profile directory: {e}")
 
 def is_already_scraped(route, window, source):
     if os.environ.get("FORCE_RESCRAPE") == "1":
@@ -267,7 +277,7 @@ def run_indigo_pipeline():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching IndiGo Pipeline Scraper (WAF Resilience Mode)...")
+    print("Launching IndiGo Pipeline Scraper (WAF Resilience Mode with Profile Purging)...")
 
     user_data_dir = os.path.join(os.getcwd(), "indigo_browser_profile")
     routes_processed = 0
@@ -336,9 +346,13 @@ def run_indigo_pipeline():
                             break # Break out of attempt loop
                                 
                         except SoftBlockException as e:
-                            print(f"🛡️ Soft block detected (Attempt {attempt})! Cooling down for 60s and restarting browser...")
+                            # --- PURGE PROFILE ON SOFT BLOCK ---
+                            print(f"🛡️ Soft block detected (Attempt {attempt})! Engaging defense protocols (Clearing Profile)...")
                             context.close()
-                            time.sleep(60)
+                            time.sleep(3) # Ensure OS releases the directory lock
+                            reset_profile_directory(user_data_dir)
+                            time.sleep(5)
+                            print("🔄 Spinning up a fresh browser for retry...")
                             context = launch_indigo_browser(p, user_data_dir)
                             page = context.pages[0] if context.pages else context.new_page()
                             
@@ -358,11 +372,13 @@ def run_indigo_pipeline():
                     print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
                     time.sleep(route_jitter)
                     
-                    # --- METHOD 1: BATCH RESTART ---
+                    # --- BATCH RESTART EVERY 3 ROUTES TO SHED TRACKING ---
                     if routes_processed > 0 and routes_processed % 3 == 0:
-                        print("\n🔄 Batch limit reached (3 routes). Restarting browser to drop WAF tracking...")
+                        print("\n🔄 Batch limit reached (3 routes). Purging profile to drop WAF tracking...")
                         context.close()
-                        time.sleep(10)
+                        time.sleep(3)
+                        reset_profile_directory(user_data_dir)
+                        time.sleep(5)
                         context = launch_indigo_browser(p, user_data_dir)
                         page = context.pages[0] if context.pages else context.new_page()
                 else:
