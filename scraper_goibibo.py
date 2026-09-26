@@ -4,7 +4,7 @@ import sqlite3
 import re
 import time
 import os
-import shutil  # Added for cache cleaning
+import shutil
 
 def reset_profile_directory(profile_dir):
     """Nukes the user profile directory to eliminate tracking history upon block."""
@@ -78,11 +78,16 @@ def run_goibibo_scraper():
         for route in top_20_routes:
             origin, dest = route.split("-")
             
+            # TRACK IF WE ACTUALLY DID WORK ON THIS ROUTE
+            route_actually_scraped = False
+            
             for window in advance_windows:
                 if is_already_scraped(route, window, "Goibibo"):
                     print(f"⏩ Goibibo: {route} | T+{window} already collected today. Skipping.")
                     continue
 
+                route_actually_scraped = True  # Flag that actual network calls are being made
+                
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d/%m/%Y") 
                 
@@ -217,12 +222,11 @@ def run_goibibo_scraper():
                                 raise Exception("No valid non-stop flights extracted despite page load.")
 
                         success = True
-                        break # Exit attempt loop on success
+                        break
 
                     except Exception as e:
                         print(f"⚠️ Goibibo Attempt {attempt} failed: {e}")
                         
-                        # --- ENGAGE PROFILE PURGE DEFENSE ON SOFT BLOCK/HTTP ERROR ---
                         if attempt == 1:
                             print("🛡️ WAF/HTTP2 block detected! Engaging defense protocols (Clearing Profile)...")
                             try:
@@ -239,18 +243,26 @@ def run_goibibo_scraper():
                 if success:
                     time.sleep(3)
 
-            # --- BATCH RESTART EVERY 3 ROUTES TO SHED TRACKING ---
-            routes_processed += 1
-            if routes_processed > 0 and routes_processed % 3 == 0:
-                print("\n🔄 Batch limit reached (3 routes). Purging profile to drop WAF tracking...")
-                context.close()
-                time.sleep(3)
-                reset_profile_directory(user_data_dir)
-                time.sleep(5)
-                context = launch_goibibo_browser(p, user_data_dir)
-                page = context.pages[0] if context.pages else context.new_page()
+            # --- ONLY PURGE BATCH IF WE ACTUALLY SCRAPED SOMETHING ---
+            if route_actually_scraped:
+                routes_processed += 1
+                if routes_processed > 0 and routes_processed % 3 == 0:
+                    print("\n🔄 Batch limit reached (3 actively scraped routes). Purging profile to drop WAF tracking...")
+                    try:
+                        context.close()
+                    except:
+                        pass
+                    time.sleep(3)
+                    reset_profile_directory(user_data_dir)
+                    time.sleep(5)
+                    context = launch_goibibo_browser(p, user_data_dir)
+                    page = context.pages[0] if context.pages else context.new_page()
 
-        context.close()
+        try:
+            context.close()
+        except:
+            pass
+            
         print("\n🎉 Goibibo Pipeline Scraping Complete!")
 
 if __name__ == "__main__":
