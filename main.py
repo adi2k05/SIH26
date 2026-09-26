@@ -58,7 +58,7 @@ def run_pipeline():
         os.environ["FORCE_RESCRAPE"] = "0"
 
     scrapers = [
-        "scraper_emt.py",
+       # "scraper_emt.py",
         "scraper_yatra.py",
         "scraper_spicejet.py",
         "scraper_akasa.py",

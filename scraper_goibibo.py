@@ -4,6 +4,27 @@ import sqlite3
 import re
 import time
 import os
+import shutil  # Added for cache cleaning
+
+def reset_profile_directory(profile_dir):
+    """Nukes the user profile directory to eliminate tracking history upon block."""
+    if os.path.exists(profile_dir):
+        try:
+            shutil.rmtree(profile_dir, ignore_errors=True)
+            print("🗑️ Reset Goibibo profile directory for a clean fingerprint.")
+        except Exception as e:
+            print(f"⚠️ Failed to delete profile directory: {e}")
+
+def launch_goibibo_browser(p, user_data_dir):
+    """Helper function to cleanly launch/relaunch the browser context."""
+    return p.chromium.launch_persistent_context(
+        user_data_dir=user_data_dir,
+        channel="chrome",
+        headless=False,
+        viewport={"width": 1920, "height": 1080},
+        args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
+        ignore_default_args=["--enable-automation"]
+    )
 
 def is_already_scraped(route, window, source):
     if os.environ.get("FORCE_RESCRAPE") == "1":
@@ -32,20 +53,13 @@ def run_goibibo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | Virtual-DOM Rolling Extraction & Strict Non-Stop)...")
+    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | Profile Purging Active)...")
 
     user_data_dir = os.path.join(os.getcwd(), "goibibo_browser_profile")
+    routes_processed = 0
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=user_data_dir,
-            channel="chrome",
-            headless=False,
-            viewport={"width": 1920, "height": 1080},
-            args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
-            ignore_default_args=["--enable-automation"]
-        )
-
+        context = launch_goibibo_browser(p, user_data_dir)
         page = context.pages[0] if context.pages else context.new_page()
 
         # --- 1. WARM UP SESSION ---
@@ -72,19 +86,18 @@ def run_goibibo_scraper():
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d/%m/%Y") 
                 
-                # Base URL without SEM tracking tags to reflect standard organic pricing
                 url = f"https://www.goibibo.com/flight/search?itinerary={origin}-{dest}-{date_str}&tripType=O&paxType=A-1_C-0_I-0&intl=false&cabinClass=E&lang=eng"
                 print(f"\n--- Goibibo Scraping: {route} | T+{window} Days ({date_str}) ---")
                 
+                success = False
+
                 for attempt in range(1, 3):
                     try:
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(4500)
 
-                        # --- INITIALIZE ROLLING JS ACCUMULATOR ---
                         page.evaluate("window.scrapedFlights = {};")
 
-                        # --- DISMISS LOGIN MODALS ---
                         page.evaluate("""() => {
                             let closeBtn = document.querySelector('span[class*="close"], button[class*="close"], [aria-label="Close"], img[alt*="close"], div[class*="modal"] span');
                             if (closeBtn) closeBtn.click();
@@ -98,20 +111,14 @@ def run_goibibo_scraper():
                             document.body.style.overflow = 'auto';
                         }""")
                         
-                        # --- VERIFY NOT BLOCKED ---
                         body_text = page.locator("body").inner_text().lower()
                         if "network problem" in body_text or "unable to connect" in body_text:
-                            print("⚠️ Hit Network Problem block! Re-warming session...")
-                            page.goto("https://www.goibibo.com/", wait_until="domcontentloaded")
-                            page.wait_for_timeout(4000)
                             raise Exception("Network block detected on direct URL.")
 
-                        # --- DYNAMIC ROLLING SCROLL ---
                         print("📜 Scrolling and extracting virtualized flights...")
                         last_height = page.evaluate("document.body.scrollHeight")
                         
                         for step in range(25):
-                            # 1. Kill Modals
                             page.evaluate("""() => {
                                 let btns = Array.from(document.querySelectorAll('button, span, div'));
                                 let okayBtn = btns.find(b => b.innerText && (b.innerText.includes('OKAY, GOT IT!') || b.innerText.includes('GOT IT')));
@@ -121,7 +128,6 @@ def run_goibibo_scraper():
                                 if (closeIcon) closeIcon.click();
                             }""")
                             
-                            # 2. Extract Visible Flights into window.scrapedFlights
                             page.evaluate("""() => {
                                 let cards = document.querySelectorAll('div[data-test="component-clusterItem"], div.ListingCardWrap, div.sbox-flight-item');
                                 if (cards.length === 0) cards = document.querySelectorAll('div[class*="cluster"]');
@@ -129,12 +135,10 @@ def run_goibibo_scraper():
                                 cards.forEach(card => {
                                     let text = card.innerText || "";
                                     
-                                    // STRICT FILTER: Ignore if it doesn't say "Non stop" or "non-stop"
                                     if (!text.toLowerCase().includes('non stop') && !text.toLowerCase().includes('non-stop')) {
                                         return; 
                                     }
                                     
-                                    // Extract Airline & Flight No
                                     let airlineEl = card.querySelector('.airlineName');
                                     let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
                                     
@@ -169,7 +173,6 @@ def run_goibibo_scraper():
                                 });
                             }""")
                             
-                            # 3. Scroll Down
                             page.evaluate("window.scrollBy(0, 800);")
                             page.wait_for_timeout(1000)
                             
@@ -178,7 +181,6 @@ def run_goibibo_scraper():
                                 break
                             last_height = new_height
 
-                        # --- FETCH FINAL ACCUMULATED RECORDS ---
                         flight_records = page.evaluate("Object.values(window.scrapedFlights);")
 
                         if flight_records:
@@ -201,7 +203,6 @@ def run_goibibo_scraper():
                                 ])
                                 conn.commit()
                             print(f"✅ Saved {len(flight_records)} strict Non-Stop records to DB for T+{window}.")
-                            break
                         else:
                             body_text = page.locator("body").inner_text()
                             if "no flights" in body_text.lower() or "sold out" in body_text.lower() or "no results" in body_text.lower():
@@ -212,16 +213,42 @@ def run_goibibo_scraper():
                                     ''', ("Goibibo Aggregator", route, window, "Goibibo"))
                                     conn.commit()
                                 print(f"ℹ️ Goibibo returned no flights for T+{window}. Logging NULL.")
-                                break
                             else:
                                 raise Exception("No valid non-stop flights extracted despite page load.")
 
+                        success = True
+                        break # Exit attempt loop on success
+
                     except Exception as e:
                         print(f"⚠️ Goibibo Attempt {attempt} failed: {e}")
+                        
+                        # --- ENGAGE PROFILE PURGE DEFENSE ON SOFT BLOCK/HTTP ERROR ---
                         if attempt == 1:
-                            time.sleep(4)
+                            print("🛡️ WAF/HTTP2 block detected! Engaging defense protocols (Clearing Profile)...")
+                            try:
+                                context.close()
+                            except:
+                                pass
+                            time.sleep(3) 
+                            reset_profile_directory(user_data_dir)
+                            time.sleep(5)
+                            print("🔄 Spinning up a fresh browser for retry...")
+                            context = launch_goibibo_browser(p, user_data_dir)
+                            page = context.pages[0] if context.pages else context.new_page()
 
+                if success:
+                    time.sleep(3)
+
+            # --- BATCH RESTART EVERY 3 ROUTES TO SHED TRACKING ---
+            routes_processed += 1
+            if routes_processed > 0 and routes_processed % 3 == 0:
+                print("\n🔄 Batch limit reached (3 routes). Purging profile to drop WAF tracking...")
+                context.close()
                 time.sleep(3)
+                reset_profile_directory(user_data_dir)
+                time.sleep(5)
+                context = launch_goibibo_browser(p, user_data_dir)
+                page = context.pages[0] if context.pages else context.new_page()
 
         context.close()
         print("\n🎉 Goibibo Pipeline Scraping Complete!")
