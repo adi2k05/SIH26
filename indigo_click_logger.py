@@ -1,9 +1,9 @@
 import sqlite3
 
-def cleanup_mmt_data():
+def cleanup_easemytrip_data():
     db_name = 'airfare_index.db'
-    target_date = '2026-09-24'
-    target_ota = 'MakeMyTrip'
+    target_date = '2026-09-25'
+    target_ota = 'EaseMyTrip'
 
     print(f"Scanning for errored {target_ota} records on {target_date}...")
 
@@ -36,4 +36,4 @@ def cleanup_mmt_data():
         print(f"❌ An error occurred: {e}")
 
 if __name__ == "__main__":
-    cleanup_mmt_data()
+    cleanup_easemytrip_data()

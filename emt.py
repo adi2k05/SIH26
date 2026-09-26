@@ -21,6 +21,10 @@ def run_emt_multi_test():
         
         for route in test_routes:
             origin, dest = route.split("-")
+            
+            origin_name = city_map[origin].lower()
+            dest_name = city_map[dest].lower()
+            
             print(f"\n==================================================")
             print(f"🛫 STARTING ROUTE: {route}")
             print(f"==================================================")
@@ -36,80 +40,102 @@ def run_emt_multi_test():
                     url = f"https://flight.easemytrip.com/FlightList/Index?srch={origin}-{city_map[origin]}-India|{dest}-{city_map[dest]}-India|{date_str}&px=1-0-0&cbn=0&ar=undefined&isSplit=false&isOneway=true&isFreeFlight=false"
                     
                     page.goto(url, wait_until="domcontentloaded", timeout=45000)
-                    
-                    page.wait_for_selector(".main-bo-li", timeout=30000)
+                    page.wait_for_selector('.main-bo-lis, .fltResult, div[id^="divFlightResult"], .flight-card', timeout=30000)
                     
                     print("Page loaded. Scrolling to populate all lazy-rendered flight cards...")
-                    for _ in range(5):
-                        page.evaluate("window.scrollBy(0, 800);")
+                    for _ in range(6):
+                        page.evaluate("window.scrollBy(0, 1000);")
                         page.wait_for_timeout(1000)
 
-                    js_extract = """() => {
+                    # --- JAVASCRIPT EXTRACTION WITH DOM-LEVEL DESTINATION CHECK ---
+                    js_extract = f"""() => {{
                         let records = [];
-                        let cards = document.querySelectorAll('.main-bo-li, div[ng-repeat*="LimitValueForListing"]');
+                        let cards = document.querySelectorAll('.main-bo-lis, .fltResult');
                         
-                        cards.forEach(card => {
-                            let text = card.innerText || card.textContent || "";
-                            let lowerText = text.toLowerCase();
+                        cards.forEach(card => {{
+                            let cardText = card.innerText || "";
+                            let lowerText = cardText.toLowerCase();
+
+                            // 1. Strict Stop Element Check (.dura_md2)
+                            let stopEl = card.querySelector('.dura_md2, [class*="dura"]');
+                            if (!stopEl) return;
+                            let stopText = stopEl.innerText.toLowerCase().trim();
+                            if (!stopText.includes('non-stop') && !stopText.includes('non stop') && !stopText.includes('0 stop') && !stopText.includes('nonstop')) return;
+
+                            // 2. Strict DOM-Level Destination City Node Check (.txt-r3-n)
+                            let cityNodes = card.querySelectorAll('.txt-r3-n');
+                            if (cityNodes.length < 2) return;
+                            let arrivalCity = cityNodes[cityNodes.length - 1].innerText.toLowerCase().trim();
                             
-                            let isNonStop = lowerText.includes('non-stop') || lowerText.includes('non stop') || lowerText.includes('0 stop') || lowerText.includes('nonstop');
-                            if (!isNonStop) return;
+                            // Reject secondary or adjacent airports directly at the DOM layer
+                            if (arrivalCity.includes('navi mumbai') || arrivalCity.includes('ghaziabad') || arrivalCity.includes('hindon') || arrivalCity.includes('noida')) {{
+                                return;
+                            }}
 
-                            let airlineEl = card.querySelector('.txt-r4, .air-line-name');
-                            let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
-                            airline = airline.replace(/Operated by|Partner/gi, '').trim();
+                            // 3. Extract Airline
+                            let airlineEl = card.querySelector('.tx-thme, .air-line-name, span.txt-r4, .airline-name');
+                            let rawAirline = airlineEl ? airlineEl.innerText.trim() : "Unknown Airline";
+                            let actualAirline = rawAirline.replace(/Operated by|Partner/gi, '').trim();
+                            if (!actualAirline) actualAirline = "EaseMyTrip Partner";
 
+                            // 4. Extract Price
+                            let priceEl = card.querySelector('.txt-r6, .txt-r6-n, .price');
+                            let cleanNum = 0;
+                            if (priceEl && priceEl.innerText) {{
+                                cleanNum = parseInt(priceEl.innerText.replace(/[^0-9]/g, ''));
+                            }} else {{
+                                let pMatch = cardText.match(/[₹|Rs]\\s*([\\d,]+)/);
+                                if (pMatch) cleanNum = parseInt(pMatch[1].replace(/,/g, ''));
+                            }}
+                            if (isNaN(cleanNum) || cleanNum < 1500) return;
+
+                            // 5. Extract & Clean Flight Number (Fixes spacing like "6E- 324")
                             let flightEl = card.querySelector('.txt-r5');
                             let flightNo = "Unknown";
-                            if (flightEl) {
+                            if (flightEl && flightEl.innerText) {{
                                 flightNo = flightEl.innerText.replace(/\\s+/g, ' ').replace('\\n', '').trim();
-                            } else {
-                                let fMatch = text.match(/([A-Z0-9]{2})[-\\s]?(\\d{3,4})/i);
+                                flightNo = flightNo.replace(/-\\s+/, '-'); // Standardize hyphen spacing
+                            }} else {{
+                                let fMatch = cardText.match(/([A-Z0-9]{{2}})[-\\s]?(\\d{{3,4}})/i);
                                 if (fMatch) flightNo = fMatch[1].toUpperCase() + "-" + fMatch[2];
-                            }
+                            }}
 
+                            // 6. Extract Departure Time
                             let depTime = "Unknown";
-                            let timeMatches = text.match(/\\b(\\d{2}:\\d{2})\\b/g);
-                            if (timeMatches && timeMatches.length > 0) {
+                            let timeMatches = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g);
+                            if (timeMatches && timeMatches.length > 0) {{
                                 depTime = timeMatches[0];
-                            }
+                            }}
 
-                            let fare = 0;
-                            let priceMatch = text.match(/[₹|Rs]\\s*([\\d,]+)/);
-                            if (priceMatch) {
-                                fare = parseInt(priceMatch[1].replace(/,/g, ''));
-                            }
-                            
-                            if (fare > 1500) {
-                                records.push({
-                                    airline: airline,
-                                    flight_no: flightNo,
-                                    departure_time: depTime,
-                                    fare: fare
-                                });
-                            }
-                        });
+                            records.push({{
+                                airline: actualAirline,
+                                flight_no: flightNo,
+                                departure_time: depTime,
+                                fare: cleanNum
+                            }});
+                        }});
                         
-                        let unique = {};
-                        records.forEach(f => {
+                        // Deduplicate identical rows
+                        let unique = {{}};
+                        records.forEach(f => {{
                             let key = f.flight_no + "_" + f.departure_time;
-                            if (!unique[key] || f.fare < unique[key].fare) {
+                            if (!unique[key] || f.fare < unique[key].fare) {{
                                 unique[key] = f;
-                            }
-                        });
+                            }}
+                        }});
                         return Object.values(unique);
-                    }"""
+                    }}"""
                     
                     extracted_flights = page.evaluate(js_extract)
 
                     if extracted_flights:
-                        print(f"✅ Extracted {len(extracted_flights)} verified Non-Stop flights.")
+                        print(f"✅ Extracted {len(extracted_flights)} strictly verified Non-Stop flights.")
                         for idx, f in enumerate(extracted_flights):
                             base = round(f['fare'] * 0.85, 2)
                             tax = round(f['fare'] * 0.15, 2)
                             print(f" {idx+1:2d}. [{f['airline']}] Flight: {f['flight_no']} | Dept: {f['departure_time']} | Base: ₹{base} | Tax: ₹{tax} | Total: ₹{f['fare']}")
                     else:
-                        print("⚠️ Zero valid non-stop flights extracted. Please verify if flights exist for this date.")
+                        print("⚠️ Zero valid non-stop flights extracted.")
 
                 except Exception as e:
                     print(f"⚠️ Test run failed: {e}")
