@@ -37,7 +37,7 @@ def run_emt_scraper():
         "MAA": "Chennai", "AMD": "Ahmedabad"
     }
 
-    print("Launching EaseMyTrip Multi-Route Scraper (Resilient Retry Mode & Strict Route Checking)...")
+    print("Launching EaseMyTrip Multi-Route Scraper (Full Lazy-Load Scroll & All Flights)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -69,10 +69,16 @@ def run_emt_scraper():
                         # Wait specifically for the flight list container to render
                         page.wait_for_selector(".main-bo-lis, .fltResult, div[id^='divFlightResult'], .flight-card", timeout=30000)
                         
-                        # A small scroll to ensure lazy-loaded elements populate
-                        for _ in range(5):
+                        # --- DYNAMIC SCROLL LOOP TO TRIGGER ALL LAZY-LOADED FLIGHTS ---
+                        print("Scrolling to load all lazy-rendered flight cards...")
+                        last_height = page.evaluate("document.body.scrollHeight")
+                        for _ in range(25):
                             page.evaluate("window.scrollBy(0, 1000);")
                             page.wait_for_timeout(1000)
+                            new_height = page.evaluate("document.body.scrollHeight")
+                            if new_height == last_height:
+                                break
+                            last_height = new_height
 
                         # --- UPDATED JS EXTRACTION: Airline, Fare, Flight No, Time & Raw Text ---
                         js_extract = """() => {
@@ -81,11 +87,6 @@ def run_emt_scraper():
                             
                             cards.forEach(card => {
                                 let cardText = card.innerText || "";
-                                let lowerText = cardText.toLowerCase();
-                                
-                                // STRICT NON-STOP FILTER
-                                let isNonStop = lowerText.includes('non-stop') || lowerText.includes('non stop') || lowerText.includes('0 stop') || lowerText.includes('nonstop');
-                                if (!isNonStop) return;
 
                                 // 1. Extract Airline
                                 let airlineEl = card.querySelector('.tx-thme, .air-line-name, span.txt-r4, .airline-name');
@@ -197,7 +198,7 @@ def run_emt_scraper():
                             page.close()
                             break
                         else:
-                            raise Exception("Zero valid strictly filtered non-stop flights extracted.")
+                            raise Exception("Zero valid flights extracted from DOM.")
 
                     except Exception as e:
                         print(f"⚠️ EMT Attempt {attempt} failed: {e}")

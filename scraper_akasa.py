@@ -33,22 +33,20 @@ def run_akasa_scraper():
         "DEL-GOI", "BOM-GOI"
     ]
     
-    print("Launching Akasa Air Scraper (Undetectable Native Chrome Mode)...")
+    print("Launching Akasa Air Scraper (Native Card Targeting & Exact Span Routing)...")
 
-    # Persistent Chrome directory to bypass Cloudflare/bot mitigation
     user_data_dir = os.path.join(os.getcwd(), "akasa_browser_profile")
 
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
-            channel="chrome",  # Uses your installed real Google Chrome
+            channel="chrome",  
             headless=False,
             viewport={"width": 1920, "height": 1080},
             args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
             ignore_default_args=["--enable-automation"]
         )
 
-        # Primary page reference
         page = context.pages[0] if context.pages else context.new_page()
 
         for route in top_20_routes:
@@ -61,8 +59,8 @@ def run_akasa_scraper():
                     if not is_already_scraped(route, window, "Akasa Direct"):
                         with sqlite3.connect('airfare_index.db') as conn:
                             conn.execute('''
-                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL)
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)
                             ''', ("Akasa Air", route, window, "Akasa Direct"))
                             conn.commit()
                 continue
@@ -80,7 +78,6 @@ def run_akasa_scraper():
                         page.goto("https://www.akasaair.com/", wait_until="domcontentloaded", timeout=45000)
                         page.wait_for_timeout(3500) 
 
-                        # Auto-dismiss cookie popups or alert overlays if they appear
                         try:
                             page.locator("button:has-text('Accept'), button:has-text('Got it'), button[aria-label='Close']").click(timeout=1500)
                         except Exception:
@@ -133,7 +130,6 @@ def run_akasa_scraper():
                         target_month_year = future_date_obj.strftime("%B %Y")
                         target_day = str(int(future_date_obj.strftime("%d")))
                         
-                        # Navigate forward if target month is in a subsequent calendar page
                         for _ in range(5):
                             if page.get_by_text(target_month_year, exact=True).is_visible():
                                 break
@@ -183,7 +179,7 @@ def run_akasa_scraper():
                         
                         page.get_by_text("Search Flights").first.click(force=True)
                         
-                        # --- RESULTS EXTRACTION ---
+                        # --- RESULTS RENDERING WAIT ---
                         flights_loaded = False
                         for _ in range(30):
                             try:
@@ -191,8 +187,8 @@ def run_akasa_scraper():
                                 if "no flights" in body_text.lower() or "sold out" in body_text.lower():
                                     with sqlite3.connect('airfare_index.db') as conn:
                                         conn.execute('''
-                                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                            VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL)
+                                            INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                            VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)
                                         ''', ("Akasa Air", route, window, "Akasa Direct"))
                                         conn.commit()
                                     print(f"ℹ️ Akasa officially returned no flights for T+{window}. Logging NULL.")
@@ -212,21 +208,96 @@ def run_akasa_scraper():
                         if flights_loaded == "EMPTY":
                             break
                         
-                        lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
-                        fares = [int(re.sub(r'[^\d]', '', l)) for l in lines if ('₹' in l or 'Rs' in l) and re.sub(r'[^\d]', '', l)]
-                        valid_fares = [f for f in fares if 1500 < f < 75000]
+                        # --- EXPLICIT ARIA-LABEL & SPAN EXTRACTION ---
+                        valid_flights = page.evaluate(f"""() => {{
+                            let records = [];
+                            // Perfectly isolate the flight cards natively
+                            let cards = document.querySelectorAll('div[aria-label="flight card"]');
+                            
+                            // Fallback just in case UI labels change slightly
+                            if (cards.length === 0) {{
+                                let allDivs = document.querySelectorAll('div');
+                                let potentialCards = Array.from(allDivs).filter(d => {{
+                                    let t = d.innerText || "";
+                                    return /QP\\s*\\d{{3,4}}/i.test(t) && (t.includes('₹') || t.includes('Rs'));
+                                }});
+                                cards = potentialCards.filter(card => {{
+                                    let childDivs = Array.from(card.querySelectorAll('div'));
+                                    return !childDivs.some(child => potentialCards.includes(child));
+                                }});
+                            }}
+
+                            cards.forEach(card => {{
+                                let text = card.innerText || "";
+                                let lowerT = text.toLowerCase();
+                                
+                                // 1. Strict Stoplist for Secondary Airports
+                                if (lowerT.includes('navi mumbai') || lowerT.includes('ghaziabad') || 
+                                    lowerT.includes('hindon') || lowerT.includes('noida') || 
+                                    lowerT.includes('(nmi)') || lowerT.includes('(hdo)')) {{
+                                    return;
+                                }}
+
+                                // 2. Native DOM Exact Routing Check (Akasa isolates IATA to SPANs)
+                                let spans = Array.from(card.querySelectorAll('span'));
+                                let hasOrig = spans.some(s => (s.innerText || "").trim().toUpperCase() === '{origin}');
+                                let hasDest = spans.some(s => (s.innerText || "").trim().toUpperCase() === '{dest}');
+                                
+                                if (!hasOrig || !hasDest) return;
+
+                                // 3. Extract Flight Number
+                                let flightMatch = text.match(/QP\\s*(\\d{{3,4}})/i);
+                                let flightNo = flightMatch ? ("QP-" + flightMatch[1]) : "";
+
+                                // 4. Extract Departure Time
+                                let times = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
+                                let depTime = times.length > 0 ? times[0] : "";
+
+                                // 5. Extract Prices
+                                let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
+                                let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
+
+                                if (flightNo && cleanPrices.length > 0) {{
+                                    records.push({{
+                                        flight_no: flightNo,
+                                        departure_time: depTime,
+                                        fare: Math.min(...cleanPrices)
+                                    }});
+                                }}
+                            }});
+
+                            // 6. Deduplicate
+                            let unique = {{}};
+                            records.forEach(r => {{
+                                let key = r.flight_no + "_" + r.departure_time;
+                                if (!unique[key] || r.fare < unique[key].fare) {{
+                                    unique[key] = r;
+                                }}
+                            }});
+                            return Object.values(unique);
+                        }}""")
                         
-                        if valid_fares:
+                        if valid_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', [("Akasa Air", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Akasa Direct", f"T{idx+1}") for idx, f in enumerate(valid_fares)])
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', [(
+                                    "Akasa Air", 
+                                    route, 
+                                    window, 
+                                    round(f['fare'] * 0.85, 2), 
+                                    round(f['fare'] * 0.15, 2), 
+                                    f['fare'], 
+                                    "Akasa Direct", 
+                                    f['departure_time'], 
+                                    f['flight_no']
+                                ) for f in valid_flights])
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_fares)} direct records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(valid_flights)} direct records (Attempt {attempt}).")
                             break
                         else:
-                            raise Exception("Zero fares extracted from card texts.")
+                            raise Exception("Zero valid flights extracted from card texts.")
                                         
                     except Exception as e:
                         print(f"⚠️ Akasa Attempt {attempt} failed: {e}")
@@ -236,7 +307,7 @@ def run_akasa_scraper():
                 time.sleep(2)
 
         context.close()
-        print("\nAkasa Multi-Route Scraping Complete!")
+        print("\n🎉 Akasa Multi-Route Scraping Complete!")
 
 if __name__ == "__main__":
     run_akasa_scraper()

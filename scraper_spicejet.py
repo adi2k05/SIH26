@@ -27,7 +27,7 @@ def run_spicejet_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching SpiceJet Multi-Route Scraper (Deep-Card Isolation Mode)...")
+    print("Launching SpiceJet Multi-Route Scraper (All Flights & Exact Native Routing)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -92,55 +92,81 @@ def run_spicejet_scraper():
                             pass
                         page.wait_for_timeout(1500)
                         
-                        # --- ROBUST DEEP-CARD EXTRACTION ---
-                        valid_flights = page.evaluate("""() => {
+                        # --- ROBUST DEEP-CARD EXTRACTION (Strict Native City Verification) ---
+                        valid_flights = page.evaluate(f"""() => {{
                             let records = [];
                             let allDivs = document.querySelectorAll('div');
                             
                             // 1. Find all divs that contain flight info
-                            let potentialCards = Array.from(allDivs).filter(d => {
+                            let potentialCards = Array.from(allDivs).filter(d => {{
                                 let t = d.innerText || "";
-                                return /SG\\s*\\d{3,4}/i.test(t) && (t.includes('Direct') || t.includes('Non-stop')) && (t.includes('₹') || t.includes('Rs'));
-                            });
+                                let hasFlight = /SG\\s*\\d{{3,4}}/i.test(t);
+                                let hasPrice = t.includes('₹') || t.includes('Rs');
+                                
+                                if (!hasFlight || !hasPrice) return false;
+                                return true;
+                            }});
 
                             // 2. ISOLATION FIX: Only keep the deepest divs (reject parent wrappers that include the calendar)
-                            let exactCards = potentialCards.filter(card => {
+                            let exactCards = potentialCards.filter(card => {{
                                 let childDivs = Array.from(card.querySelectorAll('div'));
                                 return !childDivs.some(child => potentialCards.includes(child));
-                            });
+                            }});
 
                             // 3. Extract purely from the isolated flight row
-                            exactCards.forEach(card => {
+                            exactCards.forEach(card => {{
                                 let text = card.innerText || "";
+                                let validRoute = false;
                                 
-                                let flightMatch = text.match(/SG\\s*(\\d{3,4})/i);
+                                // Target the exact 'r-ubezar' class for origin/dest codes natively in the DOM
+                                let airportNodes = Array.from(card.querySelectorAll('div.r-ubezar')).filter(el => (el.innerText || "").trim().length === 3);
+                                
+                                if (airportNodes.length >= 2) {{
+                                    let cardOrig = airportNodes[0].innerText.trim().toUpperCase();
+                                    let cardDest = airportNodes[airportNodes.length - 1].innerText.trim().toUpperCase();
+                                    
+                                    // Exact string match blocks all alternate airports (NMI, HDO, etc.) automatically
+                                    if (cardOrig === '{origin}' && cardDest === '{dest}') {{
+                                        validRoute = true;
+                                    }}
+                                }} else {{
+                                    // Fallback if UI structure changes
+                                    let lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                                    let hasOrig = lines.some(l => l.toUpperCase() === '{origin}');
+                                    let hasDest = lines.some(l => l.toUpperCase() === '{dest}');
+                                    if (hasOrig && hasDest) validRoute = true;
+                                }}
+                                
+                                if (!validRoute) return;
+                                
+                                let flightMatch = text.match(/SG\\s*(\\d{{3,4}})/i);
                                 let flightNo = flightMatch ? ("SG-" + flightMatch[1]) : "";
 
-                                let times = text.match(/\\b(\\d{2}:\\d{2})\\b/g) || [];
+                                let times = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
                                 let depTime = times.length > 0 ? times[0] : "";
 
                                 let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
                                 let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
 
-                                if (flightNo && cleanPrices.length > 0) {
-                                    records.push({
+                                if (flightNo && cleanPrices.length > 0) {{
+                                    records.push({{
                                         flight_no: flightNo,
                                         departure_time: depTime,
                                         fare: Math.min(...cleanPrices)
-                                    });
-                                }
-                            });
+                                    }});
+                                }}
+                            }});
 
                             // 4. Deduplicate
-                            let unique = {};
-                            records.forEach(r => {
+                            let unique = {{}};
+                            records.forEach(r => {{
                                 let key = r.flight_no + "_" + r.departure_time;
-                                if (!unique[key] || r.fare < unique[key].fare) {
+                                if (!unique[key] || r.fare < unique[key].fare) {{
                                     unique[key] = r;
-                                }
-                            });
+                                }}
+                            }});
                             return Object.values(unique);
-                        }""")
+                        }}""")
                         
                         if valid_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
@@ -159,7 +185,7 @@ def run_spicejet_scraper():
                                     f['flight_no']
                                 ) for f in valid_flights])
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_flights)} direct records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(valid_flights)} records (Attempt {attempt}).")
                             page.close()
                             break
                         else:

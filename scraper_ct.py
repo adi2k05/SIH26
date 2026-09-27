@@ -41,7 +41,7 @@ def run_cmt_pipeline_scraper():
         "MAA": "Chennai", "AMD": "Ahmedabad"
     }
 
-    print("Launching Cleartrip Pipeline Scraper (UI Filter, Scrolling, Non-Stop, Flight No & DB Writer)...")
+    print("Launching Cleartrip Pipeline Scraper (Removing Pre-Applied Non-Stop Filter, Scrolling & All Flights)...")
     
     user_data_dir = os.path.join(os.getcwd(), "cleartrip_browser_profile")
 
@@ -98,19 +98,26 @@ def run_cmt_pipeline_scraper():
                             page.wait_for_selector('button:has-text("Book")', timeout=25000)
                             page.wait_for_timeout(2500)
 
-                            # --- CLICK NON-STOP FILTER ON UI ---
-                            print("🎯 Ticking 'Non-stop' filter on UI...")
+                            # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
                             try:
                                 page.evaluate("""() => {
-                                    let elements = Array.from(document.querySelectorAll('p, span, div'));
-                                    let nonStop = elements.find(el => el.innerText && (el.innerText.trim() === 'Non Stop' || el.innerText.trim() === 'Non-stop'));
-                                    if (nonStop) {
-                                        // Cleartrip sidebar filters act on the parent block
-                                        let clickable = nonStop.closest('div') || nonStop.parentElement;
-                                        clickable.click();
+                                    // 1. Try clicking the top filter tag pill containing 'Non-stop'
+                                    const elements = Array.from(document.querySelectorAll('div, span'));
+                                    const pill = elements.find(el => el.innerText && el.innerText.includes('Non-stop') && el.querySelector('svg'));
+                                    if (pill) {
+                                        pill.click();
+                                        return;
                                     }
+                                    // 2. Fallback: Uncheck sidebar 'Non Stop' checkbox
+                                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                                    checkboxes.forEach(cb => {
+                                        const parent = cb.closest('label') || cb.parentElement;
+                                        if (parent && parent.innerText && parent.innerText.includes('Non Stop') && cb.checked) {
+                                            cb.click();
+                                        }
+                                    });
                                 }""")
-                                page.wait_for_timeout(3500)  # Wait for React DOM to reload with filtered results
+                                page.wait_for_timeout(3000) # Soft wait for connecting flights to populate
                             except Exception:
                                 pass
 
@@ -134,10 +141,6 @@ def run_cmt_pipeline_scraper():
                                 new_cards_found = False
                                 for raw_text in raw_flight_texts:
                                     if not raw_text or len(raw_text) < 30:
-                                        continue
-                                    
-                                    # Strict Fallback Text Filter (in case the UI click was interrupted)
-                                    if "non-stop" not in raw_text.lower() and "non stop" not in raw_text.lower():
                                         continue
 
                                     signature = raw_text[:50].strip()
@@ -210,7 +213,7 @@ def run_cmt_pipeline_scraper():
                                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     ''', flight_records)
                                     conn.commit()
-                                print(f"✅ Saved {len(flight_records)} strict Non-Stop records (Attempt {attempt}).")
+                                print(f"✅ Saved {len(flight_records)} records (Attempt {attempt}).")
                                 success = True
                                 break
                             else:

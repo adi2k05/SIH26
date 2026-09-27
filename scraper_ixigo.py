@@ -33,7 +33,7 @@ def run_ixigo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Ixigo Scraper (Native &stops=0 URL Mode)...")
+    print("Launching Ixigo Scraper (All Flights & Strict Route Filters Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(
@@ -52,8 +52,8 @@ def run_ixigo_scraper():
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d%m%Y")
                 
-                # --- NATIVE NON-STOP URL PARAMETER ---
-                search_url = f"https://www.ixigo.com/search/result/flight?from={origin}&to={dest}&date={date_str}&adults=1&children=0&infants=0&class=e&stops=0"
+                # --- NATIVE URL WITHOUT NON-STOP FLAG ---
+                search_url = f"https://www.ixigo.com/search/result/flight?from={origin}&to={dest}&date={date_str}&adults=1&children=0&infants=0&class=e"
                 
                 print(f"\n--- Ixigo Scraping: {route} | T+{window} Days ({date_str}) ---")
                 
@@ -94,51 +94,99 @@ def run_ixigo_scraper():
                                     )
                                 ''')
                                 conn.execute('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?, NULL)
                                 ''', ("Unknown", route, window, "Ixigo", "TBD"))
                                 conn.commit()
                             context.close()
                             break 
                         
-                        print("Scrolling to load all direct flights...")
+                        print("Scrolling to load all flights...")
                         seen_flights = set()
                         route_data = []
-                        flight_idx = 1
                         
-                        # Clean, streamlined extractor since URL already guarantees non-stops
-                        js_extractor = """
-                        () => {
+                        # --- UPDATED JAVASCRIPT EXTRACTOR ---
+                        js_extractor = f"""
+                        () => {{
                             let results = [];
                             let priceElements = document.querySelectorAll('[data-testid="pricing"]');
                             
-                            priceElements.forEach(priceEl => {
+                            priceElements.forEach(priceEl => {{
                                 let card = priceEl.closest('div[class*="shadow-sm"], div[class*="border-"], div[class*="tile"], div[class*="card"]') || priceEl.parentElement;
                                 if (!card) return;
 
                                 let cardText = card.innerText || "";
+                                let lowerText = cardText.toLowerCase();
                                 let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
 
+                                // 1. Strict Origin & Destination Check Native to DOM
+                                let validRoute = false;
+                                
+                                // Target the exact 'p' tags inside 'timeTileList' elements based on inspector
+                                let airportNodes = card.querySelectorAll('div[class*="timeTileList"] p[class*="body-sm"]');
+                                
+                                if (airportNodes && airportNodes.length >= 2) {{
+                                    // First node is Origin, Last node is Destination
+                                    let cardOrig = airportNodes[0].innerText.trim().toUpperCase();
+                                    let cardDest = airportNodes[airportNodes.length - 1].innerText.trim().toUpperCase();
+
+                                    // Exact string match (e.g. 'DEL' === 'DEL') rejects 'NMI'/'HDO' natively
+                                    if (cardOrig === '{origin}' && cardDest === '{dest}') {{
+                                        validRoute = true;
+                                    }}
+                                }} else {{
+                                    // Fallback: check whole card and strictly block alternate airports
+                                    let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b", "i").test(l));
+                                    let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b", "i").test(l));
+                                    if (hasOrigin && hasDest) {{
+                                        if (!lowerText.includes('navi mumbai') && !lowerText.includes('ghaziabad') && 
+                                            !lowerText.includes('hindon') && !lowerText.includes('noida') && 
+                                            !lowerText.includes('nmi') && !lowerText.includes('hdo')) {{
+                                            validRoute = true;
+                                        }}
+                                    }}
+                                }}
+                                
+                                if (!validRoute) return;
+
+                                // 2. Extract Price
                                 let cleanPrice = parseInt((priceEl.innerText || "").replace(/[^0-9]/g, ''));
                                 if (isNaN(cleanPrice) || cleanPrice < 1000) return;
 
+                                // 3. Extract Airline & Flight Num
                                 let flightNum = "";
                                 let airline = "Unknown";
                                 
-                                for (let i = 0; i < Math.min(10, lines.length); i++) {
-                                    if (/^[A-Z0-9]{2}[\\-\\s]?\\d{3,4}/i.test(lines[i])) {
+                                for (let i = 0; i < Math.min(10, lines.length); i++) {{
+                                    if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
                                         flightNum = lines[i].replace(/\\s+/g, '-');
                                         if (i > 0) airline = lines[i-1]; 
                                         break;
-                                    }
-                                }
+                                    }}
+                                }}
                                 
-                                if (flightNum) {
-                                    results.push({ airline: airline, flight_number: flightNum, total_fare: cleanPrice });
-                                }
-                            });
+                                // 4. Extract Departure Time Natively via .text-primary h6
+                                let depTime = "Unknown";
+                                let timeNode = card.querySelector('h6[class*="text-primary"], .timeTileList h6');
+                                if (timeNode && /\\d{{2}}:\\d{{2}}/.test(timeNode.innerText)) {{
+                                    let match = timeNode.innerText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/);
+                                    if (match) depTime = match[0];
+                                }} else {{
+                                    let times = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
+                                    if (times.length > 0) depTime = times[0];
+                                }}
+                                
+                                if (flightNum) {{
+                                    results.push({{ 
+                                        airline: airline, 
+                                        flight_number: flightNum, 
+                                        departure_time: depTime, 
+                                        total_fare: cleanPrice 
+                                    }});
+                                }}
+                            }});
                             return results;
-                        }
+                        }}
                         """
                         
                         scroll_attempts = 0
@@ -150,18 +198,15 @@ def run_ixigo_scraper():
                             current_flights = page.evaluate(js_extractor)
                             
                             for f in current_flights:
-                                uniq_key = f"{f['flight_number']}_{f['total_fare']}"
+                                uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
                                 if uniq_key not in seen_flights:
                                     seen_flights.add(uniq_key)
                                     base_fare = round(f['total_fare'] * 0.85, 2)
                                     taxes_fees = round(f['total_fare'] * 0.15, 2)
                                     
-                                    dept_time = f"T{flight_idx}"
-                                    flight_idx += 1
-                                    
                                     route_data.append((
                                         f['airline'], route, window, 
-                                        base_fare, taxes_fees, f['total_fare'], "Ixigo", dept_time, f['flight_number']
+                                        base_fare, taxes_fees, f['total_fare'], "Ixigo", f['departure_time'], f['flight_number']
                                     ))
                             
                             if len(seen_flights) == last_flight_count:
@@ -194,11 +239,11 @@ def run_ixigo_scraper():
                                 ''', route_data)
                                 conn.commit()
                                 
-                            print(f"✅ Saved {len(route_data)} unique non-stop records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(route_data)} verified unique records (Attempt {attempt}).")
                             context.close()
                             break 
                         else:
-                            raise Exception("Zero valid non-stop flights extracted.")
+                            raise Exception("Zero valid flights extracted.")
                                         
                     except Exception as e:
                         print(f"⚠️ Ixigo Attempt {attempt} failed: {e}")
@@ -209,7 +254,7 @@ def run_ixigo_scraper():
                 time.sleep(3)
 
         browser.close()
-        print("\nIxigo Non-Stop Scraping Complete!")
+        print("\n🎉 Ixigo Scraping Complete!")
 
 if __name__ == "__main__":
     run_ixigo_scraper()

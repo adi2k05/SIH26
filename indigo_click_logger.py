@@ -1,39 +1,40 @@
 import sqlite3
+import os
 
-def cleanup_easemytrip_data():
-    db_name = 'airfare_index.db'
-    target_date = '2026-09-25'
-    target_ota = 'EaseMyTrip'
+DB_PATH = "airfare_index.db"
+TARGET_DATE = "2026-09-27"
 
-    print(f"Scanning for errored {target_ota} records on {target_date}...")
+def clear_todays_data():
+    if not os.path.exists(DB_PATH):
+        print(f"❌ Database file '{DB_PATH}' not found in the current directory.")
+        return
 
     try:
-        with sqlite3.connect(db_name) as conn:
-            c = conn.cursor()
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
             
-            # Check how many records match the criteria before deleting
-            c.execute("""
+            # Count records matching the date before deleting
+            cursor.execute("""
                 SELECT COUNT(*) FROM raw_fares 
-                WHERE ota_source = ? AND date(timestamp) = ?
-            """, (target_ota, target_date))
+                WHERE date(timestamp) = ?
+            """, (TARGET_DATE,))
+            count_before = cursor.fetchone()[0]
             
-            count = c.fetchone()[0]
+            if count_before == 0:
+                print(f"ℹ️ No records found for date {TARGET_DATE}.")
+                return
+
+            # Execute deletion
+            cursor.execute("""
+                DELETE FROM raw_fares 
+                WHERE date(timestamp) = ?
+            """, (TARGET_DATE,))
+            conn.commit()
             
-            if count > 0:
-                # Perform the deletion
-                c.execute("""
-                    DELETE FROM raw_fares 
-                    WHERE ota_source = ? AND date(timestamp) = ?
-                """, (target_ota, target_date))
-                conn.commit()
-                print(f"✅ Successfully deleted {count} records.")
-            else:
-                print("ℹ️ No matching records found. Database is already clean.")
-                
-    except sqlite3.OperationalError as e:
-        print(f"⚠️ Database error: {e} (The table might not exist yet).")
+            print(f"✅ Successfully deleted {count_before} records for date {TARGET_DATE}.")
+            
     except Exception as e:
-        print(f"❌ An error occurred: {e}")
+        print(f"❌ Failed to clear database records: {e}")
 
 if __name__ == "__main__":
-    cleanup_easemytrip_data()
+    clear_todays_data()

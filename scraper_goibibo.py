@@ -53,7 +53,7 @@ def run_goibibo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | Profile Purging Active)...")
+    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | All Flights & Profile Purging Active)...")
 
     user_data_dir = os.path.join(os.getcwd(), "goibibo_browser_profile")
     routes_processed = 0
@@ -140,10 +140,6 @@ def run_goibibo_scraper():
                                 cards.forEach(card => {
                                     let text = card.innerText || "";
                                     
-                                    if (!text.toLowerCase().includes('non stop') && !text.toLowerCase().includes('non-stop')) {
-                                        return; 
-                                    }
-                                    
                                     let airlineEl = card.querySelector('.airlineName');
                                     let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
                                     
@@ -207,7 +203,7 @@ def run_goibibo_scraper():
                                     ) for rec in flight_records
                                 ])
                                 conn.commit()
-                            print(f"✅ Saved {len(flight_records)} strict Non-Stop records to DB for T+{window}.")
+                            print(f"✅ Saved {len(flight_records)} records to DB for T+{window}.")
                         else:
                             body_text = page.locator("body").inner_text()
                             if "no flights" in body_text.lower() or "sold out" in body_text.lower() or "no results" in body_text.lower():
@@ -219,7 +215,7 @@ def run_goibibo_scraper():
                                     conn.commit()
                                 print(f"ℹ️ Goibibo returned no flights for T+{window}. Logging NULL.")
                             else:
-                                raise Exception("No valid non-stop flights extracted despite page load.")
+                                raise Exception("No valid flights extracted despite page load.")
 
                         success = True
                         break

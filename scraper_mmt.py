@@ -49,7 +49,6 @@ def is_already_scraped(route, window, source):
             return False
 
 def dismiss_overlays(driver):
-    """Safely cleans up any blocking modals or popups if they exist."""
     try:
         driver.execute_script("""
             let modals = document.querySelectorAll('div[data-cy="outsideModal"], .imageSliderModal, .loginModal, .overlay, .commonModal__close');
@@ -60,7 +59,6 @@ def dismiss_overlays(driver):
         pass
 
 def check_for_block(driver):
-    """Detects if MMT WAF has thrown the Network Problem firewall page."""
     try:
         body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
         if "network problem" in body_text or "unable to connect to our systems" in body_text:
@@ -70,7 +68,6 @@ def check_for_block(driver):
     return False
 
 def clear_browser_data(driver):
-    """MINIMAL WAF FIX: Purges poisoned Akamai cookies and storage via CDP."""
     try:
         driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
         driver.execute_cdp_cmd('Network.clearBrowserCache', {})
@@ -109,7 +106,6 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
     dismiss_overlays(driver)
     time.sleep(1)
 
-    # 1. Select 'From' City
     print("Selecting departure city...")
     from_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="fromCity"]')))
     ActionChains(driver).move_to_element(from_label).click().perform()
@@ -123,7 +119,6 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
         raise Exception(f"No suggestions loaded for origin {origin}")
     time.sleep(1.5)
 
-    # 2. Select 'To' City
     print("Selecting destination city...")
     try:
         to_input = driver.find_element(By.CSS_SELECTOR, 'input.react-autosuggest__input')
@@ -142,7 +137,6 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
         raise Exception(f"No suggestions loaded for destination {dest}")
     time.sleep(1.5)
 
-    # 3. Pick Target Date (Bi-Directional Logic)
     target_month_short = target_date.strftime("%b")[:3]
     target_month_full = target_date.strftime("%B")
     target_day_zero = f"{target_date.day:02d}"
@@ -181,7 +175,6 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
         let captions = document.querySelectorAll('.DayPicker-Caption > div');
         
         if (captions.length > 0) {{
-            // Clean extraction of the visible month text (e.g., "September 2026")
             let visibleStr = captions[0].innerText.replace(/[^a-zA-Z0-9 ]/g, '').trim();
             let visibleTime = new Date(visibleStr.replace(' ', ' 1, ')).getTime();
             
@@ -206,7 +199,6 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
         except:
             pass
         
-        # Give it up to 12 sliding attempts to reach the correct month
         for _ in range(12):
             if driver.execute_script(js_click_date):
                 break
@@ -214,12 +206,9 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
             time.sleep(0.8)
             
     time.sleep(1.5)
-
-    # 4. Search
     print("Submitting search...")
     search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'a.widgetSearchBtn, p[data-cy="submit"] a')))
     ActionChains(driver).move_to_element(search_btn).click().perform()
-
 
 def run_mmt_multi_scraper():
     advance_windows = [1, 7, 15, 30, 45]
@@ -297,23 +286,46 @@ def run_mmt_multi_scraper():
                         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".listingCard, .listingCardWrap, div[class*='listingCard']")))
                         time.sleep(2)
 
+                        # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
+                        driver.execute_script("""
+                            // 1. Click close icon on applied filter chip at top
+                            let chips = Array.from(document.querySelectorAll('div, span')).filter(el => el.innerText && (el.innerText.includes('Non Stop') || el.innerText.includes('Non-stop')));
+                            for (let chip of chips) {
+                                let closeBtn = chip.querySelector('svg, span, [class*="close"], [class*="cross"]');
+                                if (closeBtn) {
+                                    closeBtn.click();
+                                    break;
+                                }
+                            }
+                            // 2. Uncheck sidebar checkbox if present
+                            let checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                            checkboxes.forEach(cb => {
+                                let parent = cb.closest('label') || cb.parentElement;
+                                if (parent && parent.innerText && (parent.innerText.includes('Non Stop') || parent.innerText.includes('Non-stop')) && cb.checked) {
+                                    cb.click();
+                                }
+                            });
+                        """)
+                        time.sleep(3) # Wait for connecting flights to populate
+
                         js_extract = f"""
                             let results = [];
                             let cards = document.querySelectorAll('.listingCard, .listingCardWrap, div[class*="listingCard"]');
                             
                             cards.forEach(card => {{
-                                let lines = (card.innerText || "").split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                                let cardText = card.innerText || "";
+                                let lowerText = cardText.toLowerCase();
+                                let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
                                 
-                                // 1. Strict Origin & Destination Check
+                                // 1. Strict Origin & Destination Check via Text & Nearby Airports Block
                                 let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b").test(l));
                                 let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b").test(l));
                                 if (!hasOrigin || !hasDest) return;
                                 
-                                // 2. Strict Non-Stop Check
-                                let isNonStop = lines.some(l => l.toLowerCase().includes('non-stop') || l.toLowerCase().includes('non stop'));
-                                if (!isNonStop) return;
+                                if ('{dest}' === 'BOM' && lowerText.includes('navi mumbai') && !lowerText.includes('mumbai')) return;
+                                if ('{origin}' === 'DEL' && (lowerText.includes('ghaziabad') || lowerText.includes('hindon')) && !lowerText.includes('new delhi')) return;
                                 
-                                // 3. Extract Price
+                                // 2. Extract Price
                                 let priceLine = lines.find(l => (l.includes('₹') || l.includes('Rs')) && /\\d/.test(l));
                                 if (!priceLine) return;
                                 
@@ -323,21 +335,37 @@ def run_mmt_multi_scraper():
                                 let cleanPrice = parseInt(priceMatch[1].replace(/,/g, ''));
                                 if (isNaN(cleanPrice) || cleanPrice < 1000) return;
                                 
-                                // 4. Extract Flight Number & Airline
+                                // 3. Extract Flight Number & Airline
                                 let flightNum = "";
                                 let airline = "Unknown";
                                 
                                 for (let i = 0; i < Math.min(10, lines.length); i++) {{
                                     if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
-                                        flightNum = lines[i];
+                                        flightNum = lines[i].replace(/\\s+/, '-'); 
                                         if (i > 0) airline = lines[i-1]; 
                                         break;
                                     }}
                                 }}
                                 
+                                if (!flightNum) return;
                                 if (airline === "Unknown" && lines.length > 2) airline = lines[0];
                                 
-                                results.push({{ airline: airline, flight_number: flightNum, total_fare: cleanPrice }});
+                                // 4. Extract Departure Time
+                                let depTimeNode = card.querySelector('.flightCard_time');
+                                let depTime = "Unknown";
+                                if (depTimeNode && /\\d{{2}}:\\d{{2}}/.test(depTimeNode.innerText)) {{
+                                    depTime = depTimeNode.innerText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/)[0];
+                                }} else {{
+                                    let times = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
+                                    if (times.length > 0) depTime = times[0];
+                                }}
+                                
+                                results.push({{ 
+                                    airline: airline, 
+                                    flight_number: flightNum, 
+                                    departure_time: depTime, 
+                                    total_fare: cleanPrice 
+                                }});
                             }});
                             return results;
                         """
@@ -347,7 +375,7 @@ def run_mmt_multi_scraper():
                         for scroll_attempt in range(25):
                             current_flights = driver.execute_script(js_extract)
                             for f in current_flights:
-                                uniq_key = f"{f['flight_number']}_{f['total_fare']}"
+                                uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
                                 all_flights_dict[uniq_key] = f
                                 
                             driver.execute_script("window.scrollBy(0, 900);")
@@ -358,7 +386,7 @@ def run_mmt_multi_scraper():
                                 time.sleep(1.5)
                                 current_flights = driver.execute_script(js_extract)
                                 for f in current_flights:
-                                    uniq_key = f"{f['flight_number']}_{f['total_fare']}"
+                                    uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
                                     all_flights_dict[uniq_key] = f
                                 break
 
@@ -366,12 +394,12 @@ def run_mmt_multi_scraper():
                         
                         if flights:
                             db_records = []
-                            for idx, f in enumerate(flights):
+                            for f in flights:
                                 base_fare = round(f['total_fare'] * 0.85, 2)
                                 taxes = round(f['total_fare'] * 0.15, 2)
                                 db_records.append((
                                     f['airline'], route, window, base_fare, taxes, 
-                                    f['total_fare'], "MakeMyTrip", f"T{idx+1}", f['flight_number']
+                                    f['total_fare'], "MakeMyTrip", f['departure_time'], f['flight_number']
                                 ))
                                 
                             with sqlite3.connect('airfare_index.db') as conn:
@@ -426,7 +454,6 @@ def run_mmt_multi_scraper():
                 except:
                     pass
             
-            # Anti-bot safety break: Between every single route, rest for 15-25 seconds to keep IP clean
             if route_idx < len(top_20_routes) - 1:
                 safety_sleep = random.uniform(15.0, 25.0)
                 print(f"🛡️ Anti-Bot Safety Rest: Pausing for {round(safety_sleep, 1)}s before launching next route session...")

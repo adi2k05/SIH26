@@ -2,7 +2,6 @@ from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
 from datetime import datetime, timedelta
 import sqlite3
-import re
 import time
 import os
 
@@ -11,12 +10,15 @@ def is_already_scraped(route, window, source):
         return False
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
-        c.execute("""
-            SELECT COUNT(*) FROM raw_fares 
-            WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-            AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
-        """, (route, window, source))
-        return c.fetchone()[0] > 0
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM raw_fares 
+                WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
+                AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
+            """, (route, window, source))
+            return c.fetchone()[0] > 0
+        except sqlite3.OperationalError:
+            return False
 
 def run_yatra_scraper():
     advance_windows = [1, 7, 15, 30, 45]
@@ -28,7 +30,7 @@ def run_yatra_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Yatra Multi-Route Scraper (Resilient Retry Mode)...")
+    print("Launching Yatra Multi-Route Scraper (Clean Heading Airline Extraction & Lazy-Load)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
         browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
@@ -80,31 +82,122 @@ def run_yatra_scraper():
                         if not flights_loaded:
                             raise Exception("Flights not rendered after Akamai redirect.")
                             
-                        page.wait_for_timeout(3000)
-                        try:
-                            page.evaluate("window.scrollBy(0, 1500)")
-                        except Exception:
-                            page.wait_for_timeout(2000)
-                            page.evaluate("window.scrollBy(0, 1500)")
+                        print("Page loaded. Executing scroll loop to trigger all lazy-rendered flight cards...")
+                        for step in range(18):
+                            page.evaluate("window.scrollBy(0, 1200);")
+                            page.wait_for_timeout(800)
                             
-                        page.wait_for_timeout(1500)
+                        page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                        page.wait_for_timeout(2000)
+                            
+                        # --- JAVASCRIPT DEEP EXTRACTION ---
+                        valid_flights = page.evaluate(f"""() => {{
+                            let records = [];
+                            let cards = document.querySelectorAll('.flightItem, div[class*="flightItem"]');
+                            
+                            cards.forEach(card => {{
+                                let text = card.innerText || "";
+                                
+                                // 1. Strict Origin & Destination Check via Exact Inspect Nodes
+                                let origNode = card.querySelector('.mob-origin');
+                                let destNode = card.querySelector('.arrival-details .mob-origin');
+                                
+                                let cardOrig = "";
+                                let cardDest = "";
+                                
+                                if (origNode && destNode) {{
+                                    let origMatch = origNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
+                                    let destMatch = destNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
+                                    if (origMatch) cardOrig = origMatch[1];
+                                    if (destMatch) cardDest = destMatch[1];
+                                }}
+                                
+                                if (cardOrig !== '{origin}' || cardDest !== '{dest}') {{
+                                    return;
+                                }}
+                                
+                                // 2. Extract Pure Airline Name using heading span
+                                let airlineEl = card.querySelector('span[role="heading"]');
+                                let airline = airlineEl ? (airlineEl.getAttribute('title') || airlineEl.innerText.trim()) : "Yatra Partner";
+                                
+                                // 3. Extract Flight Number
+                                let flNoEl = card.querySelector('.fl-no span, .font-lightgrey.fl-no');
+                                let flightNo = flNoEl ? flNoEl.innerText.trim() : "";
+                                if (!flightNo) {{
+                                    let m = text.match(/([A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}})/);
+                                    flightNo = m ? m[1].replace(/\\s+/, '-') : "UNKNOWN";
+                                }} else {{
+                                    flightNo = flightNo.replace(/\\s+/, '-');
+                                }}
+                                
+                                // 4. Extract Departure Time
+                                let timeEl = card.querySelector('.mob-time');
+                                let depTime = timeEl ? timeEl.innerText.trim() : "";
+                                if (!depTime) {{
+                                    let tMatch = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/);
+                                    depTime = tMatch ? tMatch[0] : "00:00";
+                                }}
+                                
+                                // 5. Extract Price
+                                let priceEl = card.querySelector('.ow-price-above-btn, .price');
+                                let cleanPrice = 0;
+                                if (priceEl && priceEl.innerText) {{
+                                    cleanPrice = parseInt(priceEl.innerText.replace(/[^0-9]/g, ''));
+                                }} else {{
+                                    let pMatch = text.match(/[₹|Rs]\\s*([\\d,]+)/);
+                                    if (pMatch) cleanPrice = parseInt(pMatch[1].replace(/,/g, ''));
+                                }}
+                                
+                                if (!isNaN(cleanPrice) && cleanPrice > 1000 && flightNo) {{
+                                    records.push({{
+                                        airline: airline,
+                                        flight_no: flightNo,
+                                        departure_time: depTime,
+                                        fare: cleanPrice
+                                    }});
+                                }}
+                            }});
+                            
+                            // Deduplicate
+                            let unique = {{}};
+                            records.forEach(r => {{
+                                let key = r.flight_no + "_" + r.departure_time;
+                                if (!unique[key] || r.fare < unique[key].fare) {{
+                                    unique[key] = r;
+                                }}
+                            }});
+                            return Object.values(unique);
+                        }}""")
                         
-                        lines = [l.strip() for l in page.locator("body").inner_text().split('\n') if l.strip()]
-                        fares = [int(re.sub(r'[^\d]', '', l)) for l in lines if ('₹' in l or 'Rs' in l) and re.sub(r'[^\d]', '', l)]
-                        valid_fares = [f for f in fares if 1500 < f < 75000]
-                        
-                        if valid_fares:
+                        if valid_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
                                 conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', [("Yatra Partner", route, window, round(f * 0.85, 2), round(f * 0.15, 2), f, "Yatra", f"T{idx+1}") for idx, f in enumerate(valid_fares)])  
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                ''', [(
+                                    f['airline'], 
+                                    route, 
+                                    window, 
+                                    round(f['fare'] * 0.85, 2), 
+                                    round(f['fare'] * 0.15, 2), 
+                                    f['fare'], 
+                                    "Yatra", 
+                                    f['departure_time'], 
+                                    f['flight_no']
+                                ) for f in valid_flights])  
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_fares)} records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(valid_flights)} verified records (Attempt {attempt}).")
                             page.close()
                             break
                         else:
-                            raise Exception("Zero valid fare numbers parsed.")
+                            raise Exception("Zero valid flights matched route criteria.")
                                         
                     except Exception as e:
                         print(f"⚠️ Yatra Attempt {attempt} failed: {e}")
@@ -115,7 +208,7 @@ def run_yatra_scraper():
                 time.sleep(2)
 
         browser.close()
-        print("\nYatra Multi-Route Scraping Complete!")
+        print("\n🎉 Yatra Multi-Route Scraping Complete!")
 
 if __name__ == "__main__":
     run_yatra_scraper()

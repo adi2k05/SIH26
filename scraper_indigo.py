@@ -6,7 +6,7 @@ import time
 import os
 import sys
 import threading
-import shutil  # Added for cache cleaning
+import shutil 
 
 # --- HOTFIX FOR WinError 6 ---
 original_excepthook = threading.excepthook
