@@ -39,11 +39,14 @@ def get_today_ist_stats():
     except Exception:
         return today_ist, 0, None
 
-def execute_scraper(script_name, pass_type="Initial"):
-    """Executes a scraper. On Windows, opens an independent console window so you can monitor all 3 scrapers live."""
+def execute_scraper(script_name, pass_type="Initial", headless=False):
+    """Executes a scraper and injects headless flags dynamically."""
     env = os.environ.copy()
     if pass_type != "Initial":
         env["FORCE_RESCRAPE"] = "0"
+        
+    # Dynamically inject the headless toggle for individual scripts to read
+    env["HEADLESS_MODE"] = "1" if headless else "0"
 
     creation_flags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
 
@@ -59,12 +62,21 @@ def execute_scraper(script_name, pass_type="Initial"):
         print(f"❌ Failed to execute {script_name}: {e}")
         return False
 
-def run_worker_task(script_name):
-    """Worker slot: Runs the primary scrape, then immediately reruns to recheck and fill missing gaps before releasing the worker slot."""
+def run_worker_task(script_name, mode):
+    """Worker slot: Routes execution based on run mode."""
+    
+    # If the user only requested a recheck ('r'), run ONE headless pass and exit.
+    if mode == "r":
+        print(f"🚀 [Worker Slot Acquired] Rechecking gaps for: {script_name}")
+        execute_scraper(script_name, pass_type="Recheck", headless=True)
+        print(f"✅ Recheck finished for {script_name}.\n")
+        return script_name
+        
+    # Otherwise, run the standard 2-pass workflow (Initial Visible -> Recovery Headless)
     print(f"🚀 [Worker Slot Acquired] Starting: {script_name}")
     
-    # 1. Primary Scrape
-    success_p1 = execute_scraper(script_name, pass_type="Initial")
+    # 1. Primary Scrape (Visible)
+    success_p1 = execute_scraper(script_name, pass_type="Initial", headless=False)
     if success_p1:
         print(f"✅ Primary run finished for {script_name}.")
     else:
@@ -72,13 +84,13 @@ def run_worker_task(script_name):
 
     time.sleep(3)
 
-    # 2. Immediate Gap Recheck / Recovery Sweep on the same slot
+    # 2. Immediate Gap Recheck (Headless)
     print(f"🔄 Immediate Recovery Sweep: Rechecking missing gaps for {script_name}...")
-    success_p2 = execute_scraper(script_name, pass_type="Recovery")
+    success_p2 = execute_scraper(script_name, pass_type="Recovery", headless=True)
     if success_p2:
         print(f"🎯 Immediate recovery complete for {script_name}.")
 
-    print(f"🔓 [Worker Slot Released] {script_name} finished both passes. Freeing slot for next scraper.\n")
+    print(f"🔓 [Worker Slot Released] {script_name} finished both passes. Freeing slot.\n")
     return script_name
 
 def run_pipeline():
@@ -89,6 +101,7 @@ def run_pipeline():
     print(f"✈️  MoSPI AirfareX Data Pipeline (Concurrent Pool Mode) | {today_ist}")
     print("=" * 65)
 
+    choice = "fresh"
     if today_count > 0:
         print(f"ℹ️  Last recorded scrape: {last_ts} IST")
         choice = input(
@@ -99,7 +112,7 @@ def run_pipeline():
             print(f"Pipeline terminated. Existing records: {today_count}.")
             return
         elif choice == "r":
-            print("🔄 Recheck mode enabled. Will only fill unfilled route windows.")
+            print("🔄 Recheck mode enabled. Executing exactly ONE headless gap-fill pass.")
             os.environ["FORCE_RESCRAPE"] = "0"
         elif choice == "y":
             print("⚠️  Force mode enabled. Overwriting checkpoints.")
@@ -114,12 +127,12 @@ def run_pipeline():
     scrapers = [
         "scraper_emt.py",
         "scraper_yatra.py",
+        "scraper_airindia.py",
         "scraper_spicejet.py",
         "scraper_akasa.py",
         "scraper_ct.py",
         "scraper_ixigo.py",
         "scraper_goibibo.py",
-        "scraper_airindia.py",
         "scraper_mmt.py",
         "scraper_indigo.py"
     ]
@@ -129,19 +142,27 @@ def run_pipeline():
     for m in missing_scrapers:
         print(f"⚠️  Skipping {m}: script file not found.")
 
-    # --- PHASE 1 & 2: 3 CONCURRENT WORKERS (WITH IMMEDIATE IN-PLACE RECHECKS) ---
+    # --- PHASE 1: PARALLEL PROCESSING ---
     print("\n" + "#" * 65)
     print(f"▶ STAGE 1: Parallel Processing (Pool Capacity: {MAX_CONCURRENT_TERMINALS} Terminals)")
     print("#" * 65)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_TERMINALS) as executor:
-        futures = {executor.submit(run_worker_task, script): script for script in valid_scrapers}
+        futures = {executor.submit(run_worker_task, script, choice): script for script in valid_scrapers}
         for future in concurrent.futures.as_completed(futures):
             script = futures[future]
             try:
                 future.result()
             except Exception as e:
                 print(f"❌ Exception in worker thread for {script}: {e}")
+
+    # --- IF USER SELECTED 'R', END PIPELINE HERE ---
+    if choice == "r":
+        _, final_count, _ = get_today_ist_stats()
+        print("\n" + "=" * 65)
+        print(f"🎉 Quick Recheck Complete! Total secured records: {final_count}")
+        print("=" * 65)
+        return
 
     # Subsequent passes must not force overwrite
     os.environ["FORCE_RESCRAPE"] = "0"
@@ -151,7 +172,7 @@ def run_pipeline():
     print(f"📊 Parallel Stage Complete. Total records collected so far: {mid_count}")
     print("=" * 65)
 
-    # --- PHASE 3: FINAL UNIFIED SWEEP (SINGLE SEQUENTIAL TERMINAL) ---
+    # --- PHASE 2: FINAL UNIFIED SWEEP (SINGLE SEQUENTIAL TERMINAL) ---
     print("\n" + "#" * 65)
     print("▶ STAGE 2: Final System Sweep (Single Terminal Sequential Verification)")
     print("#" * 65)
@@ -160,8 +181,10 @@ def run_pipeline():
     for script in valid_scrapers:
         print(f"🔍 [Final Verification] Checking {script} in main console...")
         try:
-            # Runs sequentially directly inside the current main terminal
-            subprocess.run([sys.executable, script], check=True)
+            # Force headless mode for the final sweep directly via env vars
+            env = os.environ.copy()
+            env["HEADLESS_MODE"] = "1"
+            subprocess.run([sys.executable, script], env=env, check=True)
             print(f"✅ Verified {script}.\n")
         except subprocess.CalledProcessError as e:
             print(f"❌ Error during final verification of {script}: {e}\n")

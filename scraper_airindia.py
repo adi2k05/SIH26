@@ -31,7 +31,11 @@ def run_airindia_scraper():
     print("Launching Air India API Interception Scraper (DB Pipeline Mode)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+        # --- DYNAMIC HEADLESS INJECTION ---
+        browser = p.chromium.launch(
+            headless=(os.environ.get("HEADLESS_MODE") == "1"), 
+            args=["--disable-blink-features=AutomationControlled"]
+        )
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             viewport={"width": 1920, "height": 1080}

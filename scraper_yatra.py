@@ -33,7 +33,11 @@ def run_yatra_scraper():
     print("Launching Yatra Multi-Route Scraper (Clean Heading Airline Extraction & Lazy-Load)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
-        browser = p.chromium.launch(headless=False, args=["--disable-blink-features=AutomationControlled"])
+        # --- DYNAMIC HEADLESS INJECTION ---
+        browser = p.chromium.launch(
+            headless=(os.environ.get("HEADLESS_MODE") == "1"), 
+            args=["--disable-blink-features=AutomationControlled"]
+        )
         context = browser.new_context(viewport={"width": 1920, "height": 1080})
 
         print("Initializing Yatra gateway session...")
