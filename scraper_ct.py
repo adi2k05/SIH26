@@ -41,7 +41,7 @@ def run_cmt_pipeline_scraper():
         "MAA": "Chennai", "AMD": "Ahmedabad"
     }
 
-    print("Launching Cleartrip Pipeline Scraper (Removing Pre-Applied Non-Stop Filter, Scrolling & All Flights)...")
+    print("Launching Cleartrip Pipeline Scraper (Targeted Filter Removal & Cooldowns Intact)...")
     
     user_data_dir = os.path.join(os.getcwd(), "cleartrip_browser_profile")
 
@@ -92,34 +92,38 @@ def run_cmt_pipeline_scraper():
                         page = context.pages[0] if context.pages else context.new_page()
                         
                         try:
+                            # Reverted URL to native working structure
                             url = f"https://www.cleartrip.com/flights/results?adults=1&childs=0&infants=0&class=Economy&depart_date={date_str}&from={origin}&to={dest}&intl=n&origin={origin_encoded}&destination={dest_encoded}"
                             
                             page.goto(url, wait_until="domcontentloaded", timeout=45000)
                             page.wait_for_selector('button:has-text("Book")', timeout=25000)
                             page.wait_for_timeout(2500)
 
-                            # --- SOFT, NON-BLOCKING REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
+                            # --- EXACT, SAFE REMOVAL OF PRE-APPLIED NON-STOP PILL ---
                             try:
-                                # 1. Primary: Click "Clear all filters" (avoids tooltip blockage)
-                                clear_all_btn = page.locator("text='Clear all filters'").first
-                                if clear_all_btn.is_visible(timeout=2500):
-                                    clear_all_btn.click(force=True)
-                                    page.wait_for_timeout(2500)
-                                else:
-                                    # 2. Fallback: Force-click the close SVG on the Non-stop pill
-                                    pill_close = page.locator("div:has-text('Non-stop') >> svg").first
-                                    if pill_close.is_visible(timeout=1500):
-                                        pill_close.click(force=True)
-                                        page.wait_for_timeout(2500)
-                                    else:
-                                        # 3. Fallback: JavaScript dispatch
-                                        page.evaluate("""() => {
-                                            let btn = Array.from(document.querySelectorAll('p, span, div')).find(e => e.innerText && e.innerText.trim() === 'Clear all filters');
-                                            if (btn) btn.click();
-                                        }""")
-                                        page.wait_for_timeout(2000)
+                                page.evaluate("""() => {
+                                    let svgs = Array.from(document.querySelectorAll('svg'));
+                                    for (let svg of svgs) {
+                                        let curr = svg;
+                                        // Look up to 3 parent levels above the SVG to find the text container
+                                        for(let i=0; i<3; i++) {
+                                            if (curr.parentElement) {
+                                                curr = curr.parentElement;
+                                                let txt = (curr.innerText || '').trim();
+                                                
+                                                // STRICT BOUND: It must contain 'Non-stop' and be under 15 characters.
+                                                // This guarantees we only click the tiny pill, never a whole page wrapper.
+                                                if (txt.includes('Non-stop') && txt.length <= 15) {
+                                                    svg.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+                                                    return;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }""")
+                                page.wait_for_timeout(3000)  # Soft wait for connecting flights to append
                             except Exception:
-                                pass  # If not present or already removed, safely continue
+                                pass  # Silently continue if no filters exist
 
                             print("Scrolling to load all virtual flight cards...")
                             seen_card_signatures = set()

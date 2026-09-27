@@ -1,4 +1,5 @@
 from playwright.sync_api import sync_playwright
+from playwright_stealth import Stealth
 from datetime import datetime, timedelta
 import sqlite3
 import random
@@ -63,6 +64,7 @@ def launch_indigo_browser(p, user_data_dir):
         user_data_dir=user_data_dir,
         channel="chrome",
         headless=False,
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         viewport={"width": 1920, "height": 1080},
         args=[
             "--disable-blink-features=AutomationControlled",
@@ -93,13 +95,13 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
 
     # Ensure 'One Way' trip type is active
     try:
-        page.locator("label:has-text('One Way'), input[value='one-way']").first.click(force=True, timeout=2000)
+        page.locator("label:has-text('One Way'), input[value='one-way']").first.click(timeout=2000)
     except Exception:
         pass
 
     # 2. Select Origin
     print(f"📍 Selecting Origin: {origin}...")
-    page.locator("div[class*='search-widget-form-body__from']").first.click(force=True)
+    page.locator("div[class*='search-widget-form-body__from']").first.click()
     time.sleep(1)
     
     page.keyboard.press("Control+A")
@@ -109,12 +111,12 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     
     origin_item = page.locator(f"div.city-selection__list-item:has-text('{origin}')").first
     origin_item.wait_for(state="attached", timeout=5000)
-    origin_item.click(force=True)
+    origin_item.click()
     time.sleep(1.2)
 
     # 3. Select Destination
     print(f"📍 Selecting Destination: {dest}...")
-    page.locator("div[class*='search-widget-form-body__to']").first.click(force=True)
+    page.locator("div[class*='search-widget-form-body__to']").first.click()
     time.sleep(1)
     
     page.keyboard.press("Control+A")
@@ -124,26 +126,26 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     
     dest_item = page.locator(f"div.city-selection__list-item:has-text('{dest}')").first
     dest_item.wait_for(state="attached", timeout=5000)
-    dest_item.click(force=True)
+    dest_item.click()
     time.sleep(1.2)
 
-    # 4. Select Departure Date
+    # 4. Select Departure Date 
     print(f"📅 Selecting Date: {display_date} (target code: {target_yyyy_mm_dd})...")
     
-    page.locator("div[class*='search-widget-form-body__departure']").first.click(force=True)
+    page.locator("div[class*='search-widget-form-body__departure']").first.click()
     time.sleep(1.5)
 
     date_clicked = False
     for month_flip in range(6):
         target_cell = page.locator(f"div[data-date='{target_yyyy_mm_dd}']")
         if target_cell.count() > 0 and target_cell.first.is_visible():
-            target_cell.first.click(force=True)
+            target_cell.first.click()
             date_clicked = True
             break
             
         next_btn_icon = page.locator("button.rdrNextButton:nth-of-type(2) i, button[aria-label='Next Month'] i").first
         if next_btn_icon.is_visible():
-            next_btn_icon.click(force=True)
+            next_btn_icon.click()
             time.sleep(1.5)  
         else:
             clicked_js = page.evaluate("""() => {
@@ -159,21 +161,35 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
         raise RuntimeError(f"Could not locate calendar day {target_yyyy_mm_dd} in picker.")
     time.sleep(1.2)
 
-    # 5. Submit Search
+    # 5. Submit Search 
     print("🚀 Submitting Search...")
-    page.locator("button.skyplus-button--filled-primary").first.click(force=True)
+    search_btn = page.locator("button.skyplus-button--filled-primary").first
+    search_btn.hover() 
+    time.sleep(random.uniform(0.5, 1.5)) 
+    search_btn.click(delay=random.randint(100, 300))
 
     # 6. Wait for Results Page & Prices to Render
     print("⏳ Waiting for flight selection page...")
     try:
-        # Wait for either valid cards OR the 'X' airplane soft-block image
-        page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card'], img[alt='no flight found']", timeout=45000)
+        page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card'], text='No Data Available', img[alt='no flight found']", timeout=45000)
     except:
         pass
         
     time.sleep(3)
 
-    # --- SOFT BLOCK DETECTION ---
+    # --- ORGANIC SOFT BLOCK DETECTION ---
+    if page.locator("text='No Data Available'").is_visible() or page.locator("text='redirected to Home Page'").is_visible():
+        print("🛡️ WAF Challenge Popup detected! Clicking 'Ok' to generate organic clearance cookie...")
+        try:
+            ok_btn = page.locator("button:has-text('Ok'), button:has-text('OK')").first
+            if ok_btn.is_visible(timeout=3000):
+                ok_btn.click()
+                print("⏳ Waiting for organic redirect to complete...")
+                time.sleep(5)  # Crucial: Let the JS redirect and Akamai script execute
+        except Exception as e:
+            pass
+        raise SoftBlockException("IndiGo WAF Soft Block (Popup) intercepted.")
+
     if page.locator("img[alt='no flight found']").is_visible():
         raise SoftBlockException("IndiGo WAF Soft Block (Airplane X icon) detected.")
 
@@ -277,12 +293,12 @@ def run_indigo_pipeline():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching IndiGo Pipeline Scraper (WAF Resilience Mode with Profile Purging)...")
+    print("Launching IndiGo Pipeline Scraper (WAF Resilience & Session Retention)...")
 
     user_data_dir = os.path.join(os.getcwd(), "indigo_browser_profile")
     routes_processed = 0
 
-    with sync_playwright() as p:
+    with Stealth().use_sync(sync_playwright()) as p:
         context = launch_indigo_browser(p, user_data_dir)
         page = context.pages[0] if context.pages else context.new_page()
 
@@ -303,7 +319,8 @@ def run_indigo_pipeline():
                     scraped_any_window = True
                     success = False
 
-                    for attempt in range(1, 3):
+                    # --- EXPANDED TO 3 ATTEMPTS ---
+                    for attempt in range(1, 4):
                         try:
                             records = scrape_indigo_route(page, origin, dest, window)
                             
@@ -346,19 +363,27 @@ def run_indigo_pipeline():
                             break # Break out of attempt loop
                                 
                         except SoftBlockException as e:
-                            # --- PURGE PROFILE ON SOFT BLOCK ---
-                            print(f"🛡️ Soft block detected (Attempt {attempt})! Engaging defense protocols (Clearing Profile)...")
-                            context.close()
-                            time.sleep(3) # Ensure OS releases the directory lock
-                            reset_profile_directory(user_data_dir)
-                            time.sleep(5)
-                            print("🔄 Spinning up a fresh browser for retry...")
-                            context = launch_indigo_browser(p, user_data_dir)
-                            page = context.pages[0] if context.pages else context.new_page()
-                            
+                            # --- KEEP PROFILE ALIVE ON FIRST TWO ATTEMPTS ---
+                            if attempt < 3:
+                                print(f"🛡️ WAF challenge detected (Attempt {attempt}). Retrying in the SAME session to pass clearance check...")
+                                time.sleep(3)
+                            else:
+                                # --- PURGE PROFILE ONLY ON REPEATED FAILURES ---
+                                print(f"🛑 Block persists (Attempt {attempt})! Engaging defense protocols (Clearing Profile)...")
+                                try:
+                                    context.close()
+                                except:
+                                    pass
+                                time.sleep(3) 
+                                reset_profile_directory(user_data_dir)
+                                time.sleep(5)
+                                print("🔄 Spinning up a fresh browser for retry...")
+                                context = launch_indigo_browser(p, user_data_dir)
+                                page = context.pages[0] if context.pages else context.new_page()
+                                
                         except Exception as e:
                             print(f"⚠️ Failed to scrape {route} (T+{window}): {e}")
-                            if attempt == 1:
+                            if attempt < 3:
                                 time.sleep(5)
 
                     if success:
@@ -372,10 +397,12 @@ def run_indigo_pipeline():
                     print(f"\n⏳ Route complete. Cooling down for {round(route_jitter, 1)}s before next route...")
                     time.sleep(route_jitter)
                     
-                    # --- BATCH RESTART EVERY 3 ROUTES TO SHED TRACKING ---
                     if routes_processed > 0 and routes_processed % 3 == 0:
                         print("\n🔄 Batch limit reached (3 routes). Purging profile to drop WAF tracking...")
-                        context.close()
+                        try:
+                            context.close()
+                        except:
+                            pass
                         time.sleep(3)
                         reset_profile_directory(user_data_dir)
                         time.sleep(5)

@@ -53,40 +53,38 @@ def run_goibibo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | All Flights & Profile Purging Active)...")
+    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | All Flights & Dynamic Purging Active)...")
 
     user_data_dir = os.path.join(os.getcwd(), "goibibo_browser_profile")
-    routes_processed = 0
 
     with sync_playwright() as p:
         context = launch_goibibo_browser(p, user_data_dir)
         page = context.pages[0] if context.pages else context.new_page()
 
-        # --- 1. WARM UP SESSION ---
-        print("🌐 Initializing session on Goibibo homepage...")
-        try:
-            page.goto("https://www.goibibo.com/", wait_until="domcontentloaded", timeout=60000)
-            page.wait_for_timeout(5000)
-            page.evaluate("""() => {
-                let closeBtn = document.querySelector('span[class*="close"], button[class*="close"], [aria-label="Close"]');
-                if (closeBtn) closeBtn.click();
-            }""")
-        except Exception:
-            pass
+        # --- REUSABLE WARMUP FUNCTION ---
+        def warmup_session(active_page):
+            print("🌐 Initializing session on Goibibo homepage...")
+            try:
+                active_page.goto("https://www.goibibo.com/", wait_until="domcontentloaded", timeout=60000)
+                active_page.wait_for_timeout(5000)
+                active_page.evaluate("""() => {
+                    let closeBtn = document.querySelector('span[class*="close"], button[class*="close"], [aria-label="Close"]');
+                    if (closeBtn) closeBtn.click();
+                }""")
+            except Exception:
+                pass
+
+        # Call warmup on initial launch
+        warmup_session(page)
 
         # --- 2. ITERATE ROUTES & WINDOWS ---
         for route in top_20_routes:
             origin, dest = route.split("-")
             
-            # TRACK IF WE ACTUALLY DID WORK ON THIS ROUTE
-            route_actually_scraped = False
-            
             for window in advance_windows:
                 if is_already_scraped(route, window, "Goibibo"):
                     print(f"⏩ Goibibo: {route} | T+{window} already collected today. Skipping.")
                     continue
-
-                route_actually_scraped = True  # Flag that actual network calls are being made
                 
                 future_date_obj = datetime.now() + timedelta(days=window)
                 date_str = future_date_obj.strftime("%d/%m/%Y") 
@@ -235,24 +233,11 @@ def run_goibibo_scraper():
                             print("🔄 Spinning up a fresh browser for retry...")
                             context = launch_goibibo_browser(p, user_data_dir)
                             page = context.pages[0] if context.pages else context.new_page()
+                            # --- CRITICAL FIX: Warm up the fresh profile BEFORE retrying ---
+                            warmup_session(page)
 
                 if success:
                     time.sleep(3)
-
-            # --- ONLY PURGE BATCH IF WE ACTUALLY SCRAPED SOMETHING ---
-            if route_actually_scraped:
-                routes_processed += 1
-                if routes_processed > 0 and routes_processed % 3 == 0:
-                    print("\n🔄 Batch limit reached (3 actively scraped routes). Purging profile to drop WAF tracking...")
-                    try:
-                        context.close()
-                    except:
-                        pass
-                    time.sleep(3)
-                    reset_profile_directory(user_data_dir)
-                    time.sleep(5)
-                    context = launch_goibibo_browser(p, user_data_dir)
-                    page = context.pages[0] if context.pages else context.new_page()
 
         try:
             context.close()
