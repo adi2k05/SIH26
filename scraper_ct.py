@@ -98,28 +98,28 @@ def run_cmt_pipeline_scraper():
                             page.wait_for_selector('button:has-text("Book")', timeout=25000)
                             page.wait_for_timeout(2500)
 
-                            # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
+                            # --- SOFT, NON-BLOCKING REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
                             try:
-                                page.evaluate("""() => {
-                                    // 1. Try clicking the top filter tag pill containing 'Non-stop'
-                                    const elements = Array.from(document.querySelectorAll('div, span'));
-                                    const pill = elements.find(el => el.innerText && el.innerText.includes('Non-stop') && el.querySelector('svg'));
-                                    if (pill) {
-                                        pill.click();
-                                        return;
-                                    }
-                                    // 2. Fallback: Uncheck sidebar 'Non Stop' checkbox
-                                    const checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                                    checkboxes.forEach(cb => {
-                                        const parent = cb.closest('label') || cb.parentElement;
-                                        if (parent && parent.innerText && parent.innerText.includes('Non Stop') && cb.checked) {
-                                            cb.click();
-                                        }
-                                    });
-                                }""")
-                                page.wait_for_timeout(3000) # Soft wait for connecting flights to populate
+                                # 1. Primary: Click "Clear all filters" (avoids tooltip blockage)
+                                clear_all_btn = page.locator("text='Clear all filters'").first
+                                if clear_all_btn.is_visible(timeout=2500):
+                                    clear_all_btn.click(force=True)
+                                    page.wait_for_timeout(2500)
+                                else:
+                                    # 2. Fallback: Force-click the close SVG on the Non-stop pill
+                                    pill_close = page.locator("div:has-text('Non-stop') >> svg").first
+                                    if pill_close.is_visible(timeout=1500):
+                                        pill_close.click(force=True)
+                                        page.wait_for_timeout(2500)
+                                    else:
+                                        # 3. Fallback: JavaScript dispatch
+                                        page.evaluate("""() => {
+                                            let btn = Array.from(document.querySelectorAll('p, span, div')).find(e => e.innerText && e.innerText.trim() === 'Clear all filters');
+                                            if (btn) btn.click();
+                                        }""")
+                                        page.wait_for_timeout(2000)
                             except Exception:
-                                pass
+                                pass  # If not present or already removed, safely continue
 
                             print("Scrolling to load all virtual flight cards...")
                             seen_card_signatures = set()

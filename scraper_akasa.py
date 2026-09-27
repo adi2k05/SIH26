@@ -33,7 +33,7 @@ def run_akasa_scraper():
         "DEL-GOI", "BOM-GOI"
     ]
     
-    print("Launching Akasa Air Scraper (Native Card Targeting & Exact Span Routing)...")
+    print("Launching Akasa Air Scraper (Resilient Card & Block Extraction)...")
 
     user_data_dir = os.path.join(os.getcwd(), "akasa_browser_profile")
 
@@ -208,77 +208,76 @@ def run_akasa_scraper():
                         if flights_loaded == "EMPTY":
                             break
                         
-                        # --- EXPLICIT ARIA-LABEL & SPAN EXTRACTION ---
-                        valid_flights = page.evaluate(f"""() => {{
+                        page.wait_for_timeout(2000)
+
+                        # --- ROBUST ACCORDION CARD EXTRACTION ---
+                        valid_flights = page.evaluate("""() => {
                             let records = [];
-                            // Perfectly isolate the flight cards natively
-                            let cards = document.querySelectorAll('div[aria-label="flight card"]');
+                            let cards = Array.from(document.querySelectorAll('div[id*="destinationsAccordion"], div[data-testid*="destinationsAccordion"]'));
                             
-                            // Fallback just in case UI labels change slightly
-                            if (cards.length === 0) {{
-                                let allDivs = document.querySelectorAll('div');
-                                let potentialCards = Array.from(allDivs).filter(d => {{
-                                    let t = d.innerText || "";
-                                    return /QP\\s*\\d{{3,4}}/i.test(t) && (t.includes('₹') || t.includes('Rs'));
-                                }});
-                                cards = potentialCards.filter(card => {{
-                                    let childDivs = Array.from(card.querySelectorAll('div'));
-                                    return !childDivs.some(child => potentialCards.includes(child));
-                                }});
-                            }}
-
-                            cards.forEach(card => {{
+                            cards.forEach(card => {
                                 let text = card.innerText || "";
-                                let lowerT = text.toLowerCase();
+                                let flightMatch = text.match(/QP\\s*(\\d{3,4})/i);
+                                if (!flightMatch) return;
                                 
-                                // 1. Strict Stoplist for Secondary Airports
-                                if (lowerT.includes('navi mumbai') || lowerT.includes('ghaziabad') || 
-                                    lowerT.includes('hindon') || lowerT.includes('noida') || 
-                                    lowerT.includes('(nmi)') || lowerT.includes('(hdo)')) {{
-                                    return;
-                                }}
-
-                                // 2. Native DOM Exact Routing Check (Akasa isolates IATA to SPANs)
-                                let spans = Array.from(card.querySelectorAll('span'));
-                                let hasOrig = spans.some(s => (s.innerText || "").trim().toUpperCase() === '{origin}');
-                                let hasDest = spans.some(s => (s.innerText || "").trim().toUpperCase() === '{dest}');
+                                let flightNo = "QP-" + flightMatch[1];
+                                let timeMatches = text.match(/\\b\\d{2}:\\d{2}\\b/g) || [];
+                                let depTime = timeMatches.length > 0 ? timeMatches[0] : "";
                                 
-                                if (!hasOrig || !hasDest) return;
-
-                                // 3. Extract Flight Number
-                                let flightMatch = text.match(/QP\\s*(\\d{{3,4}})/i);
-                                let flightNo = flightMatch ? ("QP-" + flightMatch[1]) : "";
-
-                                // 4. Extract Departure Time
-                                let times = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
-                                let depTime = times.length > 0 ? times[0] : "";
-
-                                // 5. Extract Prices
                                 let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
                                 let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
-
-                                if (flightNo && cleanPrices.length > 0) {{
-                                    records.push({{
+                                
+                                if (flightNo && depTime && cleanPrices.length > 0) {
+                                    records.push({
                                         flight_no: flightNo,
                                         departure_time: depTime,
                                         fare: Math.min(...cleanPrices)
-                                    }});
-                                }}
-                            }});
+                                    });
+                                }
+                            });
+                            return records;
+                        }""")
 
-                            // 6. Deduplicate
-                            let unique = {{}};
-                            records.forEach(r => {{
-                                let key = r.flight_no + "_" + r.departure_time;
-                                if (!unique[key] || r.fare < unique[key].fare) {{
-                                    unique[key] = r;
-                                }}
-                            }});
-                            return Object.values(unique);
-                        }}""")
-                        
-                        if valid_flights:
+                        # --- FALLBACK TEXT BLOCK EXTRACTION (Guarantees capture if DOM classes change) ---
+                        if not valid_flights:
+                            body_text = page.locator("body").inner_text()
+                            blocks = re.split(r'(?=(?:QP\s*\d{3,4}))', body_text, flags=re.IGNORECASE)
+                            for block in blocks:
+                                fl_match = re.search(r'QP\s*(\d{3,4})', block, re.IGNORECASE)
+                                if not fl_match:
+                                    continue
+                                fl_no = f"QP-{fl_match.group(1)}"
+                                
+                                times = re.findall(r'\b\d{2}:\d{2}\b', block)
+                                dep_time = times[0] if times else ""
+                                
+                                prices = [int(re.sub(r'[^\d]', '', p)) for p in re.findall(r'[₹|Rs]\s*[\d,]+', block)]
+                                valid_prices = [p for p in prices if 1500 < p < 75000]
+                                
+                                if fl_no and dep_time and valid_prices:
+                                    valid_flights.append({
+                                        'flight_no': fl_no,
+                                        'departure_time': dep_time,
+                                        'fare': min(valid_prices)
+                                    })
+
+                        # --- DEDUPLICATION ---
+                        unique = {}
+                        for r in valid_flights:
+                            key = f"{r['flight_no']}_{r['departure_time']}"
+                            if key not in unique or r['fare'] < unique[key]['fare']:
+                                unique[key] = r
+                        final_flights = list(unique.values())
+
+                        if final_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
                                 conn.executemany('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -292,9 +291,9 @@ def run_akasa_scraper():
                                     "Akasa Direct", 
                                     f['departure_time'], 
                                     f['flight_no']
-                                ) for f in valid_flights])
+                                ) for f in final_flights])
                                 conn.commit()
-                            print(f"✅ Saved {len(valid_flights)} direct records (Attempt {attempt}).")
+                            print(f"✅ Saved {len(final_flights)} direct records (Attempt {attempt}).")
                             break
                         else:
                             raise Exception("Zero valid flights extracted from card texts.")
