@@ -50,7 +50,7 @@ def run_cmt_pipeline_scraper():
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             channel="chrome",
-            headless=(os.environ.get("HEADLESS_MODE") == "1"),
+            headless=False,#(os.environ.get("HEADLESS_MODE") == "1"),
             viewport={"width": 1920, "height": 1080},
             args=["--disable-blink-features=AutomationControlled", "--start-maximized"],
             ignore_default_args=["--enable-automation"]
