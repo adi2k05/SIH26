@@ -125,6 +125,9 @@ def run_pipeline():
         os.environ["FORCE_RESCRAPE"] = "0"
 
     scrapers = [
+        "scraper_goibibo.py",
+        "scraper_mmt.py",
+        "scraper_indigo.py",
         "scraper_emt.py",
         "scraper_yatra.py",
         "scraper_airindia.py",
@@ -132,9 +135,7 @@ def run_pipeline():
         "scraper_akasa.py",
         "scraper_ct.py",
         "scraper_ixigo.py",
-        "scraper_goibibo.py",
-        "scraper_mmt.py",
-        "scraper_indigo.py"
+
     ]
 
     valid_scrapers = [s for s in scrapers if os.path.exists(s)]
