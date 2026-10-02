@@ -2,14 +2,31 @@ import streamlit as st
 import sqlite3
 import pandas as pd
 import plotly.express as px
+import glob
 
 st.set_page_config(page_title="MoSPI APIx Dashboard", layout="wide", page_icon="✈️")
 st.title("✈️ Real-time Airfare Price Index (APIx)")
 
 @st.cache_data(ttl=30)
 def load_data():
-    with sqlite3.connect('airfare_index.db') as conn:
-        df = pd.read_sql_query("SELECT * FROM raw_fares", conn)
+    all_data = []
+    # Find main and all split historical databases dynamically
+    db_files = glob.glob('*airfare_index*.db')
+    
+    for db in db_files:
+        with sqlite3.connect(db) as conn:
+            try:
+                df_part = pd.read_sql_query("SELECT * FROM raw_fares", conn)
+                all_data.append(df_part)
+            except sqlite3.OperationalError:
+                pass # Skip if a database file exists but has no raw_fares table yet
+
+    if not all_data:
+        return pd.DataFrame()
+
+    # Merge all dataframes together into memory for the dashboard
+    df = pd.concat(all_data, ignore_index=True)
+
     if not df.empty and 'timestamp' in df.columns:
         # Convert UTC to IST (+5:30)
         df['timestamp_ist'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %I:%M %p')
@@ -18,7 +35,7 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.warning("⚠️ No records found in 'airfare_index.db'. Run the scrapers to populate the database.")
+    st.warning("⚠️ No records found in any 'airfare_index.db' files. Run the scrapers to populate the database.")
     st.stop()
 
 # --- TOP METRICS BAR ---

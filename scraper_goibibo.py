@@ -61,7 +61,6 @@ def run_goibibo_scraper():
         context = launch_goibibo_browser(p, user_data_dir)
         page = context.pages[0] if context.pages else context.new_page()
 
-        # --- REUSABLE WARMUP FUNCTION ---
         def warmup_session(active_page):
             print("🌐 Initializing session on Goibibo homepage...")
             try:
@@ -74,10 +73,8 @@ def run_goibibo_scraper():
             except Exception:
                 pass
 
-        # Call warmup on initial launch
         warmup_session(page)
 
-        # --- 2. ITERATE ROUTES & WINDOWS ---
         for route in top_20_routes:
             origin, dest = route.split("-")
             
@@ -99,6 +96,16 @@ def run_goibibo_scraper():
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(4500)
 
+                        # 1. RAPID RELOAD CHECK: Spam reload if fake "no flights" page appears
+                        for rapid_retry in range(3):
+                            body_text_check = page.locator("body").inner_text().lower()
+                            if "no flights" in body_text_check or "sold out" in body_text_check or "no results" in body_text_check:
+                                print(f"⚠️ 'No Flights' detected on load. Rapid refreshing to force backend API ({rapid_retry + 1}/3)...")
+                                page.reload(wait_until="domcontentloaded", timeout=45000)
+                                page.wait_for_timeout(4500)
+                            else:
+                                break
+
                         page.evaluate("window.scrapedFlights = {};")
 
                         page.evaluate("""() => {
@@ -119,68 +126,86 @@ def run_goibibo_scraper():
                             raise Exception("Network block detected on direct URL.")
 
                         print("📜 Scrolling and extracting virtualized flights...")
-                        last_height = page.evaluate("document.body.scrollHeight")
                         
-                        for step in range(25):
-                            page.evaluate("""() => {
-                                let btns = Array.from(document.querySelectorAll('button, span, div'));
-                                let okayBtn = btns.find(b => b.innerText && (b.innerText.includes('OKAY, GOT IT!') || b.innerText.includes('GOT IT')));
-                                if (okayBtn) okayBtn.click();
-                                
-                                let closeIcon = document.querySelector('[class*="crossIcon"], [class*="icon-close"], span.close');
-                                if (closeIcon) closeIcon.click();
-                            }""")
+                        # 2. CONDITIONAL EXTRACTION RETRY: Only click mouse if extraction fails
+                        flight_records = []
+                        for extract_retry in range(2):
+                            last_height = page.evaluate("document.body.scrollHeight")
                             
-                            page.evaluate("""() => {
-                                let cards = document.querySelectorAll('div[data-test="component-clusterItem"], div.ListingCardWrap, div.sbox-flight-item');
-                                if (cards.length === 0) cards = document.querySelectorAll('div[class*="cluster"]');
+                            for step in range(25):
+                                page.evaluate("""() => {
+                                    let btns = Array.from(document.querySelectorAll('button, span, div'));
+                                    let okayBtn = btns.find(b => b.innerText && (b.innerText.includes('OKAY, GOT IT!') || b.innerText.includes('GOT IT')));
+                                    if (okayBtn) okayBtn.click();
+                                    
+                                    let closeIcon = document.querySelector('[class*="crossIcon"], [class*="icon-close"], span.close');
+                                    if (closeIcon) closeIcon.click();
+                                }""")
                                 
-                                cards.forEach(card => {
-                                    let text = card.innerText || "";
+                                page.evaluate("""() => {
+                                    let cards = document.querySelectorAll('div[data-test="component-clusterItem"], div.ListingCardWrap, div.sbox-flight-item');
+                                    if (cards.length === 0) cards = document.querySelectorAll('div[class*="cluster"]');
                                     
-                                    let airlineEl = card.querySelector('.airlineName');
-                                    let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
-                                    
-                                    let fliCodeEl = card.querySelector('.fliCode');
-                                    let flightNo = fliCodeEl ? fliCodeEl.innerText.trim().replace(' ', '-') : "";
-                                    
-                                    if (!flightNo) {
-                                        let flightMatch = text.match(/([A-Z0-9]{2})\\s*(\\d{3,4})/i);
-                                        flightNo = flightMatch ? (flightMatch[1].toUpperCase() + "-" + flightMatch[2]) : "";
-                                    }
-                                    
-                                    let times = text.match(/\\b(\\d{2}:\\d{2})\\b/g) || [];
-                                    let depTime = times.length > 0 ? times[0] : "";
-                                    
-                                    let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
-                                    let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 100000);
-                                    
-                                    if (flightNo && cleanPrices.length > 0) {
-                                        let minFare = Math.min(...cleanPrices);
-                                        let key = flightNo + "_" + minFare + "_" + depTime;
+                                    cards.forEach(card => {
+                                        let text = card.innerText || "";
                                         
-                                        window.scrapedFlights[key] = {
-                                            airline: airline,
-                                            flight_no: flightNo,
-                                            departure_time: depTime,
-                                            base_fare: Math.round(minFare * 0.85),
-                                            taxes_fees: Math.round(minFare * 0.15),
-                                            total_fare: minFare,
-                                            ota_source: "Goibibo"
-                                        };
-                                    }
-                                });
-                            }""")
-                            
-                            page.evaluate("window.scrollBy(0, 800);")
-                            page.wait_for_timeout(1000)
-                            
-                            new_height = page.evaluate("document.body.scrollHeight")
-                            if new_height == last_height and step > 5:
-                                break
-                            last_height = new_height
+                                        let airlineEl = card.querySelector('.airlineName');
+                                        let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
+                                        
+                                        let fliCodeEl = card.querySelector('.fliCode');
+                                        let flightNo = fliCodeEl ? fliCodeEl.innerText.trim().replace(' ', '-') : "";
+                                        
+                                        if (!flightNo) {
+                                            let flightMatch = text.match(/([A-Z0-9]{2})\\s*(\\d{3,4})/i);
+                                            flightNo = flightMatch ? (flightMatch[1].toUpperCase() + "-" + flightMatch[2]) : "";
+                                        }
+                                        
+                                        let times = text.match(/\\b(\\d{2}:\\d{2})\\b/g) || [];
+                                        let depTime = times.length > 0 ? times[0] : "";
+                                        
+                                        let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
+                                        let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 100000);
+                                        
+                                        if (flightNo && cleanPrices.length > 0) {
+                                            let minFare = Math.min(...cleanPrices);
+                                            let key = flightNo + "_" + minFare + "_" + depTime;
+                                            
+                                            window.scrapedFlights[key] = {
+                                                airline: airline,
+                                                flight_no: flightNo,
+                                                departure_time: depTime,
+                                                base_fare: Math.round(minFare * 0.85),
+                                                taxes_fees: Math.round(minFare * 0.15),
+                                                total_fare: minFare,
+                                                ota_source: "Goibibo"
+                                            };
+                                        }
+                                    });
+                                }""")
+                                
+                                page.evaluate("window.scrollBy(0, 800);")
+                                page.wait_for_timeout(1000)
+                                
+                                new_height = page.evaluate("document.body.scrollHeight")
+                                if new_height == last_height and step > 5:
+                                    break
+                                last_height = new_height
 
-                        flight_records = page.evaluate("Object.values(window.scrapedFlights);")
+                            flight_records = page.evaluate("Object.values(window.scrapedFlights);")
+                            
+                            # Check if we successfully got flights or if it's genuinely empty
+                            if flight_records:
+                                break  # Success, exit the retry loop
+                            else:
+                                body_text_post = page.locator("body").inner_text().lower()
+                                if "no flights" in body_text_post or "sold out" in body_text_post or "no results" in body_text_post:
+                                    break  # Genuinely empty page, exit the retry loop
+                                elif extract_retry == 0:
+                                    # We have 0 flights, but the page doesn't say "sold out". 
+                                    # Execute the native mouse click to wake React DOM and retry extraction.
+                                    print("🖱️ Flights not extracted despite page load. Simulating native click and retrying...")
+                                    page.mouse.click(10, 10)
+                                    page.wait_for_timeout(2000)
 
                         if flight_records:
                             with sqlite3.connect('airfare_index.db') as conn:
@@ -233,7 +258,6 @@ def run_goibibo_scraper():
                             print("🔄 Spinning up a fresh browser for retry...")
                             context = launch_goibibo_browser(p, user_data_dir)
                             page = context.pages[0] if context.pages else context.new_page()
-                            # --- CRITICAL FIX: Warm up the fresh profile BEFORE retrying ---
                             warmup_session(page)
 
                 if success:

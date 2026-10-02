@@ -4,6 +4,8 @@ from fastapi.responses import HTMLResponse
 from typing import Optional
 import sqlite3
 import math
+import glob
+import os
 
 app = FastAPI(
     title="MoSPI APIx",
@@ -18,17 +20,45 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+def get_unified_db():
+    """
+    Connects to the active airfare_index.db and attaches any monthly
+    archive databases (e.g., sep_airfare_index.db) dynamically.
+    """
+    conn = sqlite3.connect("airfare_index.db")
+    archive_dbs = sorted([f for f in glob.glob("*_airfare_index.db") if f != "airfare_index.db"])
+    
+    if not archive_dbs:
+        return conn, "raw_fares"
+    
+    parts = ["SELECT * FROM main.raw_fares"]
+    for idx, db_file in enumerate(archive_dbs):
+        alias = f"arc_{idx}"
+        conn.execute(f"ATTACH DATABASE '{db_file}' AS {alias}")
+        parts.append(f"SELECT * FROM {alias}.raw_fares")
+    
+    union_source = f"(SELECT * FROM ({' UNION ALL '.join(parts)})) AS raw_fares"
+    return conn, union_source
+
 def query_db(query: str, args: tuple = ()):
-    with sqlite3.connect("airfare_index.db") as conn:
+    conn, table_source = get_unified_db()
+    try:
         conn.row_factory = sqlite3.Row
-        return [dict(row) for row in conn.execute(query, args).fetchall()]
+        sql = query.replace("raw_fares", table_source) if table_source != "raw_fares" else query
+        return [dict(row) for row in conn.execute(sql, args).fetchall()]
+    finally:
+        conn.close()
 
 def query_db_scalar(query: str, args: tuple = ()):
-    with sqlite3.connect("airfare_index.db") as conn:
+    conn, table_source = get_unified_db()
+    try:
         cursor = conn.cursor()
-        cursor.execute(query, args)
+        sql = query.replace("raw_fares", table_source) if table_source != "raw_fares" else query
+        cursor.execute(sql, args)
         row = cursor.fetchone()
         return row[0] if row else 0
+    finally:
+        conn.close()
 
 DOCUMENTATION_HTML = """
 <!DOCTYPE html>
@@ -533,7 +563,7 @@ def get_raw_fares(
     total_pages = math.ceil(total_records / size) if total_records > 0 else 1
 
     offset = (page - 1) * size
-    data_query = f"{data_query_base} ORDER BY id ASC LIMIT ? OFFSET ?"
+    data_query = f"{data_query_base} ORDER BY timestamp ASC, id ASC LIMIT ? OFFSET ?"
     query_params = filter_params + (size, offset)
 
     results = query_db(data_query, query_params)

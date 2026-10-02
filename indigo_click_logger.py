@@ -1,41 +1,24 @@
 import sqlite3
-import os
 
-DB_PATH = "airfare_index.db"
-TARGET_DATE = "2026-09-27"
-OTA_SOURCE = "Cleartrip"
-
-def clear_cleartrip_data():
-    if not os.path.exists(DB_PATH):
-        print(f"❌ Database file '{DB_PATH}' not found in the current directory.")
-        return
-
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cursor = conn.cursor()
-            
-            # Count records matching the criteria before deleting
-            cursor.execute("""
-                SELECT COUNT(*) FROM raw_fares 
-                WHERE ota_source = ? AND date(timestamp) = ?
-            """, (OTA_SOURCE, TARGET_DATE))
-            count_before = cursor.fetchone()[0]
-            
-            if count_before == 0:
-                print(f"ℹ️ No records found for OTA source '{OTA_SOURCE}' on date {TARGET_DATE}.")
-                return
-
-            # Execute deletion
-            cursor.execute("""
-                DELETE FROM raw_fares 
-                WHERE ota_source = ? AND date(timestamp) = ?
-            """, (OTA_SOURCE, TARGET_DATE))
-            conn.commit()
-            
-            print(f"✅ Successfully deleted {count_before} records for '{OTA_SOURCE}' on {TARGET_DATE}.")
-            
-    except Exception as e:
-        print(f"❌ Failed to clear database records: {e}")
+def keep_only_october_records():
+    with sqlite3.connect('airfare_index.db') as conn:
+        cursor = conn.cursor()
+        
+        # Delete any records from before October 1, 2026 (clears September and older)
+        cursor.execute("""
+            DELETE FROM raw_fares 
+            WHERE date(timestamp) < '2026-10-01'
+        """)
+        
+        deleted_rows = cursor.rowcount
+        
+        # 1. Commit the deletion transaction FIRST
+        conn.commit()
+        
+        # 2. Safely VACUUM to reclaim disk space
+        cursor.execute("VACUUM")
+        
+        print(f"✅ Successfully deleted {deleted_rows} historical records. Only October data remains in the active airfare_index.db.")
 
 if __name__ == "__main__":
-    clear_cleartrip_data()
+    keep_only_october_records()
