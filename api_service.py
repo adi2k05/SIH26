@@ -309,7 +309,7 @@ DOCUMENTATION_HTML = """
                     </div>
                     <div class="meta-item">
                         <small>Active Base URL</small>
-                        <code>https://mospi-apix-api.onrender.com</code>
+                        <code>https://airfarex-api.onrender.com</code>
                     </div>
                 </div>
             </section>
@@ -330,7 +330,7 @@ DOCUMENTATION_HTML = """
 <pre>import requests
 import pandas as pd
 
-url = "https://mospi-apix-api.onrender.com/api/fares/raw"
+url = "https://airfarex-api.onrender.com/api/fares/raw"
 params = {"page": 1, "size": 50000, "hours_back": 24}
 response = requests.get(url, params=params).json()
 
@@ -346,7 +346,7 @@ else:
                     <div style="margin-top: 16px;">
                         <h3>cURL (For Terminal Testing)</h3>
                         <div class="code-block">
-<pre>curl -X GET "https://mospi-apix-api.onrender.com/api/fares/raw?page=1&size=50000&hours_back=24" \
+<pre>curl -X GET "https://airfarex-api.onrender.com/api/fares/raw?page=1&size=50000&hours_back=24" \
      -H "Accept: application/json"</pre>
                         </div>
                     </div>
