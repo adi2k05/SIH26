@@ -265,7 +265,7 @@ DOCUMENTATION_HTML = """
 <body>
     <header>
         <div class="brand">
-            ✈️ MoSPI APIx
+            ✈️ AirfareX API
             <span class="badge-version">v1.2.0 (Paginated)</span>
         </div>
         <div class="nav-links">
