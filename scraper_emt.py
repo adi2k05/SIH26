@@ -67,7 +67,7 @@ def run_emt_scraper():
                         page.goto(url, wait_until="domcontentloaded", timeout=45000)
                         
                         # Wait specifically for the flight list container to render
-                        page.wait_for_selector(".main-bo-lis, .fltResult, div[id^='divFlightResult'], .flight-card", timeout=30000)
+                        page.wait_for_selector(".main-bo-lis, .fltResult, div[id^='divFlightResult'], .flight-card", timeout=35000)
                         
                         # --- DYNAMIC SCROLL LOOP TO TRIGGER ALL LAZY-LOADED FLIGHTS ---
                         print("Scrolling to load all lazy-rendered flight cards...")
