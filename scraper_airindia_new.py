@@ -123,7 +123,7 @@ def run_airindia_scraper():
                     page = context.new_page()
 
                     try:
-                        page.goto("https://www.airindia.com/", wait_until="domcontentloaded", timeout=60000)
+                        page.goto("https://www.airindia.com/", wait_until="domcontentloaded", timeout=600000)
                         page.wait_for_timeout(9000)
 
                         try:
