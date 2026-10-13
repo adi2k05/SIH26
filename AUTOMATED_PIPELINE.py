@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 
 DB_PATH = "airfare_index.db"
 IST = timezone(timedelta(hours=5, minutes=30))
-MAX_CONCURRENT_TERMINALS = 3
+MAX_CONCURRENT_TERMINALS = 5
 
 def enable_sqlite_wal():
     """Enables Write-Ahead Logging (WAL) and sets a busy timeout to prevent database lock errors when 3 scrapers write concurrently."""
