@@ -248,7 +248,7 @@ def run_mmt_multi_scraper():
             
             driver = uc.Chrome(
                 options=options,
-                version_main=153,
+                #version_main=153,
                 use_subprocess=True
             )
             wait = WebDriverWait(driver, 35)
