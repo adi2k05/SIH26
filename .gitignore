@@ -191,3 +191,5 @@ goibibo_browser_profile/
 *.png
 
 *.webm
+homepage.html
+scraper_ai.py
