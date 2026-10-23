@@ -1,8 +1,9 @@
 import sqlite3
 
-def keep_only_specific_date_records():
+def delete_yatra_specific_date():
     db_file = 'airfare_index.db'
-    target_date = '2026-10-21'
+    target_date = '2026-10-23'
+    target_ota = 'Yatra'
     
     print(f"Connecting to {db_file}...")
     
@@ -10,23 +11,23 @@ def keep_only_specific_date_records():
     with sqlite3.connect(db_file, timeout=20.0) as conn:
         cursor = conn.cursor()
         
-        # Delete all rows where the date does NOT match the target date
-        # (or where the timestamp is missing/NULL)
+        # Match the YYYY-MM-DD part of the timestamp and the specific OTA
         cursor.execute(
-            "DELETE FROM raw_fares WHERE date(timestamp) != ? OR timestamp IS NULL", 
-            (target_date,)
+            "DELETE FROM raw_fares WHERE date(timestamp) = ? AND ota_source = ?", 
+            (target_date, target_ota)
         )
         deleted_rows = cursor.rowcount
         
-        # Commit the deletion transaction FIRST before vacuuming
+        # Commit the transaction FIRST
         conn.commit()
         
-        print(f"✅ Successfully deleted {deleted_rows} records that were NOT from {target_date}.")
+        print(f"✅ Successfully deleted {deleted_rows} records for {target_ota} on {target_date}.")
         
+        # Reclaim disk space if rows were actually deleted
         if deleted_rows > 0:
             print("🧹 Vacuuming database to reclaim disk space...")
             cursor.execute("VACUUM")
             print("Database compacted.")
 
 if __name__ == "__main__":
-    keep_only_specific_date_records()
+    delete_yatra_specific_date()

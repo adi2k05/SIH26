@@ -33,7 +33,6 @@ def run_yatra_scraper():
     print("Launching Yatra Multi-Route Scraper (Clean Heading Airline Extraction & Lazy-Load)...")
 
     with Stealth().use_sync(sync_playwright()) as p:
-        # --- DYNAMIC HEADLESS INJECTION ---
         browser = p.chromium.launch(
             headless=(os.environ.get("HEADLESS_MODE") == "1"), 
             args=["--disable-blink-features=AutomationControlled"]
@@ -86,70 +85,169 @@ def run_yatra_scraper():
                         if not flights_loaded:
                             raise Exception("Flights not rendered after Akamai redirect.")
                             
-                        print("Page loaded. Executing scroll loop to trigger all lazy-rendered flight cards...")
-                        for step in range(18):
-                            page.evaluate("window.scrollBy(0, 1200);")
-                            page.wait_for_timeout(800)
+                        print("Page loaded. Executing adaptive scroll loop to trigger all lazy-rendered flight cards...")
+                        expected_total = page.evaluate("""() => {
+                            let m = document.body.innerText.match(/(\\d+)\\s+flights?/i);
+                            return m ? parseInt(m[1]) : 0;
+                        }""")
+                        if expected_total > 0:
+                            print(f"Target flight count from page header: {expected_total}")
+
+                        prev_card_count = 0
+                        no_new_streak = 0
+                        for step in range(1, 80):
+                            page.evaluate("window.scrollBy(0, 1000);")
+                            page.wait_for_timeout(500)
                             
+                            if step % 4 == 0:
+                                card_count = page.evaluate("document.querySelectorAll('article[data-flight-id], article.card-lift, .flightItem, div[class*=\"flightItem\"]').length")
+                                if expected_total > 0 and card_count >= expected_total:
+                                    print(f"All {expected_total} flights fully rendered (step {step}).")
+                                    break
+                                    
+                                if card_count == prev_card_count:
+                                    no_new_streak += 1
+                                    page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
+                                    page.wait_for_timeout(1000)
+                                    if no_new_streak >= 3:
+                                        print(f"Reached bottom of search results with {card_count} cards.")
+                                        break
+                                else:
+                                    no_new_streak = 0
+                                    prev_card_count = card_count
+                                    
                         page.evaluate("window.scrollTo(0, document.body.scrollHeight);")
                         page.wait_for_timeout(2000)
                             
                         # --- JAVASCRIPT DEEP EXTRACTION ---
                         valid_flights = page.evaluate(f"""() => {{
                             let records = [];
-                            let cards = document.querySelectorAll('.flightItem, div[class*="flightItem"]');
+                            let cards = document.querySelectorAll('article[data-flight-id], article.card-lift, .flightItem, div[class*="flightItem"]');
                             
                             cards.forEach(card => {{
+                                if (card.classList && card.classList.contains('srp-offer-card')) {{
+                                    return;
+                                }}
                                 let text = card.innerText || "";
                                 
-                                // 1. Strict Origin & Destination Check via Exact Inspect Nodes
-                                let origNode = card.querySelector('.mob-origin');
-                                let destNode = card.querySelector('.arrival-details .mob-origin');
-                                
+                                // 1. Strict Origin & Destination Check
                                 let cardOrig = "";
                                 let cardDest = "";
                                 
-                                if (origNode && destNode) {{
-                                    let origMatch = origNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
-                                    let destMatch = destNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
-                                    if (origMatch) cardOrig = origMatch[1];
-                                    if (destMatch) cardDest = destMatch[1];
+                                // In the card, the first airport code is origin and the last is final destination
+                                let codes = Array.from(text.matchAll(/\\(([A-Z]{{3}})\\)/g)).map(m => m[1]);
+                                if (codes.length >= 2) {{
+                                    cardOrig = codes[0];
+                                    cardDest = codes[codes.length - 1];
+                                }}
+                                
+                                // Fallback to legacy selectors
+                                if (!cardOrig || !cardDest) {{
+                                    let origNode = card.querySelector('.mob-origin');
+                                    let destNode = card.querySelector('.arrival-details .mob-origin');
+                                    if (origNode && destNode) {{
+                                        let origMatch = origNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
+                                        let destMatch = destNode.innerText.match(/\\(([A-Z]{{3}})\\)/);
+                                        if (origMatch) cardOrig = origMatch[1];
+                                        if (destMatch) cardDest = destMatch[1];
+                                    }}
+                                }}
+                                
+                                let flightId = card.getAttribute('data-flight-id') || "";
+                                // Fallback to flight-id
+                                if ((!cardOrig || !cardDest) && flightId.length >= 6 && /^[A-Z]{{6}}/.test(flightId)) {{
+                                    cardOrig = flightId.slice(0, 3);
+                                    let matchDest = flightId.match(/([A-Z]{{3}})[A-Z0-9]{{2}}\\d{{3,4}}[A-Z0-9]*_\\w+$/);
+                                    cardDest = matchDest ? matchDest[1] : flightId.slice(3, 6);
                                 }}
                                 
                                 if (cardOrig !== '{origin}' || cardDest !== '{dest}') {{
                                     return;
                                 }}
                                 
-                                // 2. Extract Pure Airline Name using heading span
-                                let airlineEl = card.querySelector('span[role="heading"]');
-                                let airline = airlineEl ? (airlineEl.getAttribute('title') || airlineEl.innerText.trim()) : "Yatra Partner";
+                                // 2. Extract Airline Name
+                                let airline = "";
+                                let logoImg = card.querySelector('img[alt*="logo" i]');
+                                if (logoImg && logoImg.getAttribute('alt')) {{
+                                    airline = logoImg.getAttribute('alt').replace(/\\s*logo/i, '').trim();
+                                }}
+                                if (!airline) {{
+                                    let airlineEl = card.querySelector('span[role="heading"]');
+                                    if (airlineEl) {{
+                                        airline = airlineEl.getAttribute('title') || airlineEl.innerText.trim();
+                                    }}
+                                }}
+                                if (!airline) {{
+                                    let pAir = card.querySelector('p[class*="font-semibold"]');
+                                    if (pAir) {{
+                                        airline = pAir.innerText.trim();
+                                    }}
+                                }}
+                                if (!airline) {{
+                                    airline = "Yatra Partner";
+                                }}
                                 
                                 // 3. Extract Flight Number
-                                let flNoEl = card.querySelector('.fl-no span, .font-lightgrey.fl-no');
-                                let flightNo = flNoEl ? flNoEl.innerText.trim() : "";
+                                let flightNo = "";
+                                if (flightId) {{
+                                    // Match segments: 6 chars for airports followed by airline code (2) + flight digits (3-4)
+                                    let segMatches = Array.from(flightId.matchAll(/[A-Z]{{6}}([A-Z0-9]{{2}}\\d{{3,4}})/g)).map(m => m[1]);
+                                    if (segMatches.length > 0) {{
+                                        let flNums = segMatches.map(m => m.slice(0, 2) + '-' + m.slice(2));
+                                        flightNo = Array.from(new Set(flNums)).join('/');
+                                    }} else {{
+                                        let mId = flightId.match(/^[A-Z]{{6}}([A-Z0-9]{{2}})(\\d{{3,4}})/);
+                                        if (mId) flightNo = mId[1] + '-' + mId[2];
+                                    }}
+                                }}
                                 if (!flightNo) {{
-                                    let m = text.match(/([A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}})/);
-                                    flightNo = m ? m[1].replace(/\\s+/, '-') : "UNKNOWN";
+                                    let flNoEl = card.querySelector('.fl-no span, .font-lightgrey.fl-no');
+                                    if (flNoEl && flNoEl.innerText.trim()) {{
+                                        flightNo = flNoEl.innerText.trim();
+                                    }}
+                                }}
+                                if (!flightNo) {{
+                                    let pTags = card.querySelectorAll('p[class*="text-xs"], span');
+                                    for (let p of pTags) {{
+                                        let t = p.innerText ? p.innerText.trim() : "";
+                                        if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}$/.test(t)) {{
+                                            flightNo = t;
+                                            break;
+                                        }}
+                                    }}
+                                }}
+                                if (!flightNo) {{
+                                    let m = text.match(/\\b([A-Z0-9]{{2}})[\\-\\s]?(\\d{{3,4}})\\b/);
+                                    flightNo = m ? (m[1] + '-' + m[2]) : "UNKNOWN";
                                 }} else {{
                                     flightNo = flightNo.replace(/\\s+/, '-');
+                                    if (!flightNo.includes('-') && flightNo.length >= 3) {{
+                                        flightNo = flightNo.slice(0, 2) + '-' + flightNo.slice(2);
+                                    }}
                                 }}
                                 
                                 // 4. Extract Departure Time
-                                let timeEl = card.querySelector('.mob-time');
+                                let timeEl = card.querySelector('.mob-time, p[class*="tabular-nums"][class*="font-bold"]');
                                 let depTime = timeEl ? timeEl.innerText.trim() : "";
-                                if (!depTime) {{
+                                if (!depTime || !/^\\d{{2}}:\\d{{2}}$/.test(depTime)) {{
                                     let tMatch = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/);
                                     depTime = tMatch ? tMatch[0] : "00:00";
                                 }}
                                 
                                 // 5. Extract Price
-                                let priceEl = card.querySelector('.ow-price-above-btn, .price');
                                 let cleanPrice = 0;
+                                let priceEl = card.querySelector('.ow-price-above-btn, .price, p[class*="font-extrabold"], p[class*="text-xl"]');
                                 if (priceEl && priceEl.innerText) {{
-                                    cleanPrice = parseInt(priceEl.innerText.replace(/[^0-9]/g, ''));
-                                }} else {{
-                                    let pMatch = text.match(/[₹|Rs]\\s*([\\d,]+)/);
-                                    if (pMatch) cleanPrice = parseInt(pMatch[1].replace(/,/g, ''));
+                                    let val = parseInt(priceEl.innerText.replace(/[^0-9]/g, ''));
+                                    if (!isNaN(val) && val > 1000) cleanPrice = val;
+                                }}
+                                if (!cleanPrice) {{
+                                    let pMatches = Array.from(text.matchAll(/[₹|Rs]\\s*([\\d,]+)/g))
+                                                        .map(m => parseInt(m[1].replace(/,/g, '')))
+                                                        .filter(v => !isNaN(v) && v > 1000);
+                                    if (pMatches.length > 0) {{
+                                        cleanPrice = Math.min(...pMatches);
+                                    }}
                                 }}
                                 
                                 if (!isNaN(cleanPrice) && cleanPrice > 1000 && flightNo) {{

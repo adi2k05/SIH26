@@ -18,6 +18,19 @@ def is_already_scraped(route, window, source):
         except sqlite3.OperationalError:
             return False
 
+# --- NEW CDP CLEANUP FUNCTION FOR PLAYWRIGHT ---
+def clear_browser_data(page):
+    try:
+        # Attach a Chrome DevTools Protocol session directly to the Playwright page
+        client = page.context.new_cdp_session(page)
+        client.send('Network.clearBrowserCookies')
+        client.send('Network.clearBrowserCache')
+        # Purge frontend storage where Air India Express tracks search counts
+        page.evaluate("window.localStorage.clear(); window.sessionStorage.clear();")
+        print("🧹 CDP: Cleared poisoned browser session storage and Akamai cookies.")
+    except Exception as e:
+        pass
+
 def extract_flights(page, origin, dest):
     results = []
     seen_flight_numbers = set()
@@ -193,6 +206,13 @@ def run_airindia_express_scraper():
                         else:
                             # Verify if it's truly empty or a block
                             text = page.evaluate("() => document.body.innerText")
+                            
+                            # --- NEW WAF DETECTION & PURGE TRIGGER ---
+                            if "Take a Break" in text or "Search after some time" in text:
+                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Engaging CDP purge...")
+                                clear_browser_data(page)
+                                raise Exception("WAF Rate Limit Block")
+                                
                             if "We couldn't find any flights" in text:
                                 print(f"Info: Air India Express does not operate flights on {route} for T+{window}.")
                                 with sqlite3.connect('airfare_index.db') as conn:
@@ -210,7 +230,11 @@ def run_airindia_express_scraper():
                     except Exception as e:
                         print(f"Warning: Air India Express {route} T+{window} Attempt {attempt} failed: {e}")
                         context.close()
-                        if attempt == 1:
+                        
+                        # Apply a slightly longer cooldown if the backend explicitly rate-limited us
+                        if "WAF Rate Limit Block" in str(e):
+                            time.sleep(12)
+                        elif attempt == 1:
                             time.sleep(8)
 
         browser.close()
