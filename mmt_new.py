@@ -1,0 +1,443 @@
+import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.common.action_chains import ActionChains
+from datetime import datetime, timedelta
+import sqlite3
+import random
+import time
+import traceback
+import sys
+import os
+import threading
+
+# --- HOTFIX FOR WinError 6 ---
+original_excepthook = threading.excepthook
+def suppress_winerror6_excepthook(args):
+    if issubclass(args.exc_type, OSError) and getattr(args.exc_value, 'winerror', None) == 6:
+        pass 
+    else:
+        original_excepthook(args)
+threading.excepthook = suppress_winerror6_excepthook
+
+original_sys_excepthook = sys.excepthook
+def suppress_winerror6_sys_excepthook(exc_type, exc_value, exc_traceback):
+    if issubclass(exc_type, OSError) and getattr(exc_value, 'winerror', None) == 6:
+        pass
+    else:
+        original_sys_excepthook(exc_type, exc_value, exc_traceback)
+sys.excepthook = suppress_winerror6_sys_excepthook
+# -----------------------------
+
+def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
+    if not os.path.exists('airfare_index.db'):
+        return False
+        
+    with sqlite3.connect('airfare_index.db') as conn:
+        c = conn.cursor()
+        try:
+            c.execute("""
+                SELECT COUNT(*) FROM raw_fares 
+                WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
+                AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
+            """, (route, window, source))
+            return c.fetchone()[0] > 0
+        except sqlite3.OperationalError:
+            return False
+
+def dismiss_overlays(driver):
+    try:
+        driver.execute_script("""
+            let modals = document.querySelectorAll('div[data-cy="outsideModal"], .imageSliderModal, .loginModal, .overlay, .commonModal__close');
+            modals.forEach(m => m.remove());
+            document.body.style.overflow = 'auto';
+        """)
+    except:
+        pass
+
+def check_for_block(driver):
+    try:
+        body_text = driver.find_element(By.TAG_NAME, "body").text.lower()
+        if "network problem" in body_text or "unable to connect to our systems" in body_text:
+            return True
+    except:
+        pass
+    return False
+
+def clear_browser_data(driver):
+    try:
+        driver.execute_cdp_cmd('Network.clearBrowserCookies', {})
+        driver.execute_cdp_cmd('Network.clearBrowserCache', {})
+        driver.execute_cdp_cmd('Storage.clearDataForOrigin', {
+            "origin": "https://www.makemytrip.com",
+            "storageTypes": "all"
+        })
+        print("🧹 CDP: Cleared poisoned browser session storage and Akamai cookies.")
+    except Exception as e:
+        pass
+
+def perform_ui_warmup(driver, wait, origin, dest, target_date):
+    print("Performing UI Warmup (Bypassing Network Block)...")
+    driver.get("https://www.makemytrip.com/")
+    time.sleep(3)
+    
+    if check_for_block(driver):
+        raise Exception("WAF Block (Network Problem) triggered on homepage warmup.")
+    
+    print("Checking for initial dynamic promo modal (up to 7s)...")
+    modal_start = time.time()
+    while time.time() - modal_start < 7.0:
+        try:
+            close_btn = driver.find_element(By.CSS_SELECTOR, 'span[data-cy="closeModal"], .commonModal__close')
+            if close_btn.is_displayed():
+                try:
+                    close_btn.click()
+                except:
+                    driver.execute_script("arguments[0].click();", close_btn)
+                print("✅ Modal closed.")
+                break
+        except:
+            pass
+        time.sleep(0.5)
+        
+    dismiss_overlays(driver)
+    time.sleep(1)
+
+    print("Selecting departure city...")
+    from_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="fromCity"]')))
+    ActionChains(driver).move_to_element(from_label).click().perform()
+    time.sleep(1.5)
+    
+    from_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input.react-autosuggest__input')))
+    from_input.send_keys(origin)
+    time.sleep(2.5) 
+    
+    if not driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) { opt.click(); return true; } return false;"):
+        raise Exception(f"No suggestions loaded for origin {origin}")
+    time.sleep(1.5)
+
+    print("Selecting destination city...")
+    try:
+        to_input = driver.find_element(By.CSS_SELECTOR, 'input.react-autosuggest__input')
+        if not to_input.is_displayed():
+            raise Exception("Hidden")
+    except:
+        to_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="toCity"]')))
+        ActionChains(driver).move_to_element(to_label).click().perform()
+        time.sleep(1.5)
+        to_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input.react-autosuggest__input')))
+    
+    to_input.send_keys(dest)
+    time.sleep(2.5)
+    
+    if not driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) { opt.click(); return true; } return false;"):
+        raise Exception(f"No suggestions loaded for destination {dest}")
+    time.sleep(1.5)
+
+    target_month_short = target_date.strftime("%b")[:3]
+    target_month_full = target_date.strftime("%B")
+    target_day_zero = f"{target_date.day:02d}"
+    target_year = str(target_date.year)
+    
+    print(f"Selecting date: {target_month_short} {target_day_zero}, {target_year}...")
+    
+    js_click_date = f"""
+        let cells = document.querySelectorAll('.DayPicker-Day');
+        for (let c of cells) {{
+            let aria = c.getAttribute('aria-label');
+            if (aria) {{
+                let parts = aria.split(' '); 
+                if (parts.length >= 4) {{
+                    let cMonth = parts[1].substring(0,3); 
+                    let cDay = parts[2];
+                    let cYear = parts[3];
+                    
+                    if (cMonth === '{target_month_short}' && cYear === '{target_year}') {{
+                        if (cDay === '{target_day_zero}' || cDay === parseInt('{target_day_zero}').toString()) {{
+                            if (c.getAttribute('aria-disabled') === 'true') return false;
+                            
+                            let inner = c.querySelector('.dateInnerCell') || c;
+                            inner.click();
+                            return true;
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        return false;
+    """
+
+    js_navigate_calendar = f"""
+        let targetTime = new Date('{target_month_full} 1, {target_year}').getTime();
+        let captions = document.querySelectorAll('.DayPicker-Caption > div');
+        
+        if (captions.length > 0) {{
+            let visibleStr = captions[0].innerText.replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            let visibleTime = new Date(visibleStr.replace(' ', ' 1, ')).getTime();
+            
+            if (!isNaN(visibleTime) && targetTime < visibleTime) {{
+                let prevBtn = document.querySelector('span[aria-label="Previous Month"], .DayPicker-NavButton--prev');
+                if (prevBtn && prevBtn.getAttribute('aria-disabled') !== 'true') {{
+                    prevBtn.click();
+                    return;
+                }}
+            }}
+        }}
+        
+        let nextBtn = document.querySelector('span[aria-label="Next Month"], .DayPicker-NavButton--next'); 
+        if (nextBtn) nextBtn.click();
+    """
+    
+    if not driver.execute_script(js_click_date):
+        try:
+            departure_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="departure"]')))
+            ActionChains(driver).move_to_element(departure_label).click().perform()
+            time.sleep(1.5)
+        except:
+            pass
+        
+        for _ in range(12):
+            if driver.execute_script(js_click_date):
+                break
+            driver.execute_script(js_navigate_calendar)
+            time.sleep(0.8)
+            
+    time.sleep(1.5)
+    print("Submitting search...")
+    search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'a.widgetSearchBtn, p[data-cy="submit"] a')))
+    ActionChains(driver).move_to_element(search_btn).click().perform()
+
+def run_mmt_multi_scraper():
+    advance_windows = [1, 7, 15, 30, 45]
+    top_20_routes = [
+        "DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL", 
+        "BOM-BLR", "BLR-BOM", "DEL-HYD", "HYD-DEL", 
+        "DEL-CCU", "CCU-DEL", "DEL-GOI", "BOM-GOI", 
+        "DEL-MAA", "MAA-DEL", "BOM-MAA", "MAA-BOM", 
+        "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
+    ]
+
+    print("Launching MakeMyTrip Pipeline Scraper (Anti-WAF Persistent Profile Mode)...")
+    user_data_dir = os.path.join(os.getcwd(), "mmt_browser_profile")
+
+    for route_idx, route in enumerate(top_20_routes):
+        origin, dest = route.split("-")
+        
+        all_done = all(is_already_scraped(route, w, "MakeMyTrip") for w in advance_windows)
+        if all_done:
+            print(f"\n⏩ Route {route} completely skipped (already collected today). Moving immediately to next.")
+            continue
+
+        print(f"\n==================================================")
+        print(f"🛫 STARTING ROUTE [{route_idx+1}/20]: {route}")
+        print(f"==================================================")
+        
+        scraped_any_window = False
+
+        for window in advance_windows:
+            if is_already_scraped(route, window, "MakeMyTrip"):
+                print(f"⏩ MMT: {route} | T+{window} already collected today. Skipping.")
+                continue
+
+            scraped_any_window = True
+            target_date = datetime.now() + timedelta(days=window)
+            url_date = target_date.strftime("%d/%m/%Y")
+            
+            print(f"\n--- MMT Scraping: {route} | T+{window} Days ({url_date}) ---")
+            
+            success = False
+            for attempt in range(1, 3):
+                driver = None
+                try:
+                    options = uc.ChromeOptions()
+                    options.add_argument("--disable-blink-features=AutomationControlled")
+                    options.add_argument("--start-maximized")
+                    options.add_argument(f"--user-data-dir={user_data_dir}")
+                    
+                    options.add_argument("--disable-background-timer-throttling")
+                    options.add_argument("--disable-backgrounding-occluded-windows")
+                    options.add_argument("--disable-renderer-backgrounding")
+                    
+                    driver = uc.Chrome(
+                        options=options,
+                        use_subprocess=True
+                    )
+                    wait = WebDriverWait(driver, 35)
+
+                    # Always warmup fresh browser instance
+                    perform_ui_warmup(driver, wait, origin, dest, target_date)
+                        
+                    if check_for_block(driver):
+                        raise Exception("WAF Block (Network Problem) triggered on search URL.")
+                        
+                    dismiss_overlays(driver)
+                    print("Waiting for flight cards to render...")
+                    wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".listingCard, .listingCardWrap, div[class*='listingCard']")))
+                    time.sleep(2)
+
+                    # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
+                    driver.execute_script("""
+                        let chips = Array.from(document.querySelectorAll('div, span')).filter(el => el.innerText && (el.innerText.includes('Non Stop') || el.innerText.includes('Non-stop')));
+                        for (let chip of chips) {
+                            let closeBtn = chip.querySelector('svg, span, [class*="close"], [class*="cross"]');
+                            if (closeBtn) {
+                                closeBtn.click();
+                                break;
+                            }
+                        }
+                        let checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                        checkboxes.forEach(cb => {
+                            let parent = cb.closest('label') || cb.parentElement;
+                            if (parent && parent.innerText && (parent.innerText.includes('Non Stop') || parent.innerText.includes('Non-stop')) && cb.checked) {
+                                cb.click();
+                            }
+                        });
+                    """)
+                    time.sleep(3) # Wait for connecting flights to populate
+
+                    js_extract = f"""
+                        let results = [];
+                        let cards = document.querySelectorAll('.listingCard, .listingCardWrap, div[class*="listingCard"]');
+                        
+                        cards.forEach(card => {{
+                            let cardText = card.innerText || "";
+                            let lowerText = cardText.toLowerCase();
+                            let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                            
+                            let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b").test(l));
+                            let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b").test(l));
+                            if (!hasOrigin || !hasDest) return;
+                            
+                            if ('{dest}' === 'BOM' && lowerText.includes('navi mumbai') && !lowerText.includes('mumbai')) return;
+                            if ('{origin}' === 'DEL' && (lowerText.includes('ghaziabad') || lowerText.includes('hindon')) && !lowerText.includes('new delhi')) return;
+                            
+                            let priceLine = lines.find(l => (l.includes('₹') || l.includes('Rs')) && /\\d/.test(l));
+                            if (!priceLine) return;
+                            
+                            let priceMatch = priceLine.match(/[₹|Rs]\\s*([\\d,]+)/);
+                            if (!priceMatch) return;
+                            
+                            let cleanPrice = parseInt(priceMatch[1].replace(/,/g, ''));
+                            if (isNaN(cleanPrice) || cleanPrice < 1000) return;
+                            
+                            let flightNum = "";
+                            let airline = "Unknown";
+                            
+                            for (let i = 0; i < Math.min(10, lines.length); i++) {{
+                                if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
+                                    flightNum = lines[i].replace(/\\s+/, '-'); 
+                                    if (i > 0) airline = lines[i-1]; 
+                                    break;
+                                }}
+                            }}
+                            
+                            if (!flightNum) return;
+                            if (airline === "Unknown" && lines.length > 2) airline = lines[0];
+                            
+                            let depTimeNode = card.querySelector('.flightCard_time');
+                            let depTime = "Unknown";
+                            if (depTimeNode && /\\d{{2}}:\\d{{2}}/.test(depTimeNode.innerText)) {{
+                                depTime = depTimeNode.innerText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/)[0];
+                            }} else {{
+                                let times = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
+                                if (times.length > 0) depTime = times[0];
+                            }}
+                            
+                            results.push({{ 
+                                airline: airline, 
+                                flight_number: flightNum, 
+                                departure_time: depTime, 
+                                total_fare: cleanPrice 
+                            }});
+                        }});
+                        return results;
+                    """
+
+                    all_flights_dict = {}
+                    
+                    for scroll_attempt in range(25):
+                        current_flights = driver.execute_script(js_extract)
+                        for f in current_flights:
+                            uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
+                            all_flights_dict[uniq_key] = f
+                            
+                        driver.execute_script("window.scrollBy(0, 900);")
+                        time.sleep(1.2)
+                        
+                        at_bottom = driver.execute_script("return Math.ceil(window.innerHeight + window.scrollY) >= document.body.scrollHeight;")
+                        if at_bottom:
+                            time.sleep(1.5)
+                            current_flights = driver.execute_script(js_extract)
+                            for f in current_flights:
+                                uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
+                                all_flights_dict[uniq_key] = f
+                            break
+
+                    flights = list(all_flights_dict.values())
+                    
+                    if flights:
+                        db_records = []
+                        for f in flights:
+                            base_fare = round(f['total_fare'] * 0.85, 2)
+                            taxes = round(f['total_fare'] * 0.15, 2)
+                            db_records.append((
+                                f['airline'], route, window, base_fare, taxes, 
+                                f['total_fare'], "MakeMyTrip", f['departure_time'], f['flight_number']
+                            ))
+                            
+                        with sqlite3.connect('airfare_index.db') as conn:
+                            conn.execute('''
+                                CREATE TABLE IF NOT EXISTS raw_fares (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                    airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                    taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                )
+                            ''')
+                            conn.executemany('''
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', db_records)
+                            conn.commit()
+                            
+                        print(f"✅ Saved {len(flights)} verified flights (Attempt {attempt}).")
+                        success = True
+                        break
+                    else:
+                        raise Exception("Zero valid flights extracted.")
+                        
+                except Exception as e:
+                    print(f"⚠️ Attempt {attempt} failed: {e}")
+                    if "Network Problem" in str(e) or "WAF Block" in str(e):
+                        print("🛡️ WAF Firewall Block detected! Engaging CDP purge...")
+                        if driver:
+                            clear_browser_data(driver)
+                        time.sleep(2)
+                    if attempt == 1:
+                        time.sleep(5)
+                finally:
+                    # Crucial: Always quit driver inside the attempt loop to wipe memory clean
+                    if driver:
+                        try:
+                            clear_browser_data(driver)
+                            driver.quit()
+                        except:
+                            pass
+            
+            if success:
+                jitter = random.uniform(5.0, 9.0)
+                print(f"⏳ Cooling down for {round(jitter, 1)}s...")
+                time.sleep(jitter)
+
+        if scraped_any_window and route_idx < len(top_20_routes) - 1:
+            safety_sleep = random.uniform(15.0, 25.0)
+            print(f"🛡️ Anti-Bot Safety Rest: Pausing for {round(safety_sleep, 1)}s before launching next route session...")
+            time.sleep(safety_sleep)
+
+    print("\n🎉 MakeMyTrip Batch Scraping Complete!")
+
+if __name__ == "__main__":
+    run_mmt_multi_scraper()
+    os._exit(0)

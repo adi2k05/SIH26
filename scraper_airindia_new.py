@@ -119,7 +119,7 @@ def run_airindia_scraper():
                 print(f"--- Air India Scraping: {route} | T+{window} Days ({target_iso}) ---")
 
                 for attempt in range(1, 3):
-                    context = browser.new_context(viewport={"width": 1920, "height": 1080}, record_video_dir=os.path.join(os.getcwd(), 'videos'))
+                    context = browser.new_context(viewport={"width": 1920, "height": 1080})
                     page = context.new_page()
 
                     try:
