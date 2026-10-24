@@ -1,33 +1,37 @@
 import sqlite3
 
-def delete_yatra_specific_date():
-    db_file = 'airfare_index.db'
-    target_date = '2026-10-23'
-    target_ota = 'Yatra'
+def copy_specific_date_data():
+    target_db = 'airfare_index.db'
+    source_db = '24data.db'
+    target_date = '2026-10-24'
+
+    print(f"Attaching {source_db} to {target_db}...")
     
-    print(f"Connecting to {db_file}...")
-    
-    # Wait up to 20 seconds to prevent "database is locked" errors
-    with sqlite3.connect(db_file, timeout=20.0) as conn:
+    with sqlite3.connect(target_db, timeout=20.0) as conn:
         cursor = conn.cursor()
         
-        # Match the YYYY-MM-DD part of the timestamp and the specific OTA
-        cursor.execute(
-            "DELETE FROM raw_fares WHERE date(timestamp) = ? AND ota_source = ?", 
-            (target_date, target_ota)
-        )
-        deleted_rows = cursor.rowcount
+        # Attach the source database so we can query both simultaneously
+        cursor.execute(f"ATTACH DATABASE '{source_db}' AS source_db")
         
-        # Commit the transaction FIRST
+        # Insert records directly from the attached database
+        cursor.execute(f"""
+            INSERT INTO main.raw_fares (
+                timestamp, airline, route, advance_window_days, 
+                base_fare, taxes_fees, total_fare, ota_source, 
+                departure_time, flight_no
+            )
+            SELECT 
+                timestamp, airline, route, advance_window_days, 
+                base_fare, taxes_fees, total_fare, ota_source, 
+                departure_time, flight_no
+            FROM source_db.raw_fares
+            WHERE date(timestamp) = ?
+        """, (target_date,))
+        
+        copied_rows = cursor.rowcount
         conn.commit()
         
-        print(f"✅ Successfully deleted {deleted_rows} records for {target_ota} on {target_date}.")
-        
-        # Reclaim disk space if rows were actually deleted
-        if deleted_rows > 0:
-            print("🧹 Vacuuming database to reclaim disk space...")
-            cursor.execute("VACUUM")
-            print("Database compacted.")
+        print(f"✅ Successfully copied {copied_rows} records for {target_date} from {source_db} to {target_db}.")
 
 if __name__ == "__main__":
-    delete_yatra_specific_date()
+    copy_specific_date_data()
