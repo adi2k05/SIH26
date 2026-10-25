@@ -138,7 +138,7 @@ def run_airindia_express_scraper():
                         
                         try:
                             # Origin
-                            page.locator("#new-flight-search-origin-field-text").first.click(timeout=5000)
+                            page.locator("#new-flight-search-origin-field-text").first.click(timeout=25000)
                             page.wait_for_timeout(500)
                             page.locator("#basic-url-origin").fill(origin)
                             page.wait_for_timeout(1000)
@@ -153,7 +153,7 @@ def run_airindia_express_scraper():
                             page.evaluate(f"() => {{ const items = Array.from(document.querySelectorAll('.flight-list-group-item')); const match = items.find(i => i.innerText.includes('{dest}')); if(match) match.click(); }}")
                             
                             # Date
-                            page.locator("#start-date-input-button").first.click(timeout=5000)
+                            page.locator("#start-date-input-button").first.click(timeout=10000)
                             page.wait_for_timeout(1000)
                             
                             target_date_str = f"{future_date_obj.day} {future_date_obj.strftime('%B %Y')}"
