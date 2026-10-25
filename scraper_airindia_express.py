@@ -18,7 +18,7 @@ def is_already_scraped(route, window, source):
         except sqlite3.OperationalError:
             return False
 
-# --- NEW CDP CLEANUP FUNCTION FOR PLAYWRIGHT ---
+# --- CDP CLEANUP FUNCTION FOR PLAYWRIGHT ---
 def clear_browser_data(page):
     try:
         # Attach a Chrome DevTools Protocol session directly to the Playwright page
@@ -35,13 +35,13 @@ def extract_flights(page, origin, dest):
     results = []
     seen_flight_numbers = set()
     
-    # Wait for the flights to load in the DOM
+    # Reduced timeout to 6s so rapid refreshes fire instantly without hanging
     try:
-        page.locator("text=Departing Flights").wait_for(timeout=30000)
+        page.locator("text=Departing Flights").wait_for(timeout=6000)
     except:
         pass # Fallback to parsing whatever is on screen if it fails
     
-    page.wait_for_timeout(2000)
+    page.wait_for_timeout(1500)
     text = page.evaluate("() => document.body.innerText")
     
     # CRITICAL: Exclude Nearby Airports as requested!
@@ -108,7 +108,7 @@ def run_airindia_express_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching Native Air India Express Scraper (UI Priming + Deep Link Mode)...")
+    print("Launching Native Air India Express Scraper (UI Priming + Dynamic WAF Bypass)...")
 
     # Use patchright with headless=False to bypass Akamai/Cloudflare
     with sync_playwright() as p:
@@ -166,8 +166,7 @@ def run_airindia_express_scraper():
                                     page.locator(date_selector).first.click()
                                     break
                                 else:
-                                    # Click next month button - usually an svg or button in the calendar header
-                                    # We can evaluate js to find the right arrow button
+                                    # Click next month button
                                     page.evaluate("() => { const btns = Array.from(document.querySelectorAll('button')); const nextBtn = btns.find(b => b.innerHTML.includes('arrow') || b.innerHTML.includes('right') || b.getAttribute('aria-label') === 'Next Month'); if(nextBtn) nextBtn.click(); }")
                                     page.wait_for_timeout(500)
                             else:
@@ -175,12 +174,44 @@ def run_airindia_express_scraper():
 
                             # Click Search button
                             page.evaluate("() => { document.querySelectorAll('button').forEach(b => { if((b.innerText || '').toLowerCase().includes('search')) b.click() }) }")
-                            page.wait_for_timeout(15000) # Let the flight search load completely
+                            
+                            # --- DYNAMIC WAIT TO PREVENT HANGING ---
+                            try:
+                                page.wait_for_function("""() => {
+                                    let txt = document.body.innerText;
+                                    return txt.includes('Departing Flights') || 
+                                           txt.includes('Take a Break') || 
+                                           txt.includes('Search after some time') || 
+                                           txt.includes('We couldn\\'t find any flights');
+                                }""", timeout=25000)
+                            except:
+                                pass
+                            page.wait_for_timeout(1500)
 
                         except Exception as inner_e:
                             print("UI Navigation warning:", inner_e)
                         
                         flights = extract_flights(page, origin, dest)
+
+                        # --- WAF DETECTION, RAPID REFRESH, THEN CDP PURGE ---
+                        if not flights:
+                            text = page.evaluate("() => document.body.innerText")
+                            if "Take a Break" in text or "Search after some time" in text:
+                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Attempting rapid reloads...")
+                                for refresh_count in range(1, 5):
+                                    print(f"🔄 Rapid reload attempt {refresh_count}...")
+                                    page.reload(wait_until="domcontentloaded")
+                                    page.wait_for_timeout(4500)
+                                    flights = extract_flights(page, origin, dest)
+                                    if flights:
+                                        print(f"✅ Bypass successful on refresh {refresh_count}!")
+                                        break
+                                
+                                # If all 4 reloads fail, engage the CDP purge and reset the environment
+                                if not flights:
+                                    print("🛡️ Rapid reload failed. Engaging CDP purge...")
+                                    clear_browser_data(page)
+                                    raise Exception("WAF Rate Limit Block")
 
                         if flights:
                             print(f"Success: Air India Express {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).")
@@ -204,14 +235,8 @@ def run_airindia_express_scraper():
                             context.close()
                             break
                         else:
-                            # Verify if it's truly empty or a block
+                            # Verify if it's truly empty or just unrecognized
                             text = page.evaluate("() => document.body.innerText")
-                            
-                            # --- NEW WAF DETECTION & PURGE TRIGGER ---
-                            if "Take a Break" in text or "Search after some time" in text:
-                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Engaging CDP purge...")
-                                clear_browser_data(page)
-                                raise Exception("WAF Rate Limit Block")
                                 
                             if "We couldn't find any flights" in text:
                                 print(f"Info: Air India Express does not operate flights on {route} for T+{window}.")
@@ -231,7 +256,6 @@ def run_airindia_express_scraper():
                         print(f"Warning: Air India Express {route} T+{window} Attempt {attempt} failed: {e}")
                         context.close()
                         
-                        # Apply a slightly longer cooldown if the backend explicitly rate-limited us
                         if "WAF Rate Limit Block" in str(e):
                             time.sleep(12)
                         elif attempt == 1:

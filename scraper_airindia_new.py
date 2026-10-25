@@ -177,8 +177,32 @@ def run_airindia_scraper():
                         no_flights_scheduled = False
                         for _ in range(20):
                             body_text = page.locator("body").inner_text()
+                            
+                            # --- NEW RAPID REFRESH BYPASS FOR FRONTEND ERRORS ---
                             if "SOMETHING WENT WRONG" in body_text.upper():
-                                raise Exception("Air India results page threw its frontend error.")
+                                print("⚠️ Frontend error detected! Rapidly refreshing page to bypass...")
+                                bypass_success = False
+                                for refresh_count in range(1, 5):
+                                    print(f"🔄 Rapid reload attempt {refresh_count}...")
+                                    page.reload(wait_until="domcontentloaded")
+                                    page.wait_for_timeout(8000)  # Wait for Air India's heavy frontend
+                                    
+                                    refresh_text = page.locator("body").inner_text()
+                                    if "Flight Details" in refresh_text:
+                                        flights_loaded = True
+                                        bypass_success = True
+                                        break
+                                    elif "no flights" in refresh_text.lower() or "sorry" in refresh_text.lower():
+                                        no_flights_scheduled = True
+                                        bypass_success = True
+                                        break
+                                        
+                                if bypass_success:
+                                    break
+                                else:
+                                    raise Exception("Air India frontend error persisted after rapid reloads.")
+                            # ----------------------------------------------------
+                            
                             if "no flights" in body_text.lower() or "sorry" in body_text.lower():
                                 no_flights_scheduled = True
                                 break
