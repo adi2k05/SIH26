@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from typing import Optional
@@ -691,6 +691,11 @@ def health_check():
         return {"status": "operational", "database": "connected", "environment": "production"}
     except Exception as e:
         return {"status": "degraded", "database": "disconnected", "error": str(e)}
+
+@app.head("/health",
+include_in_schema=False)
+def health_check_head():
+    return Response(status_code=200)
 
 @app.get("/api/fares/raw")
 def get_raw_fares(
