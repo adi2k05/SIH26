@@ -301,7 +301,7 @@ DOCUMENTATION_HTML = """
     <header>
         <div class="brand">
             <span class="status-dot"></span> <span class="float-emoji">✈️</span> AirfareX API
-            <span class="badge-version">v2.0 (SIH Analytics Engine)</span>
+            <span class="badge-version">v2.0 </span>
         </div>
         <div class="nav-links">
             <a href="#quickstart">Quickstart</a>
