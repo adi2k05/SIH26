@@ -207,7 +207,8 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
             
     time.sleep(1.5)
     print("Submitting search...")
-    search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'a.widgetSearchBtn, p[data-cy="submit"] a')))
+    # UPDATED SELECTOR: Explicitly targeting button tags to handle the MMT DOM change
+    search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button.widgetSearchBtn, a.widgetSearchBtn, p[data-cy="submit"] button, p[data-cy="submit"] a')))
     ActionChains(driver).move_to_element(search_btn).click().perform()
 
 def run_mmt_multi_scraper():
@@ -220,7 +221,7 @@ def run_mmt_multi_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching MakeMyTrip Pipeline Scraper (Anti-WAF Persistent Profile Mode)...")
+    print("Launching MakeMyTrip Pipeline Scraper (Anti-WAF Persistent Profile Mode + Rapid Reload)...")
     user_data_dir = os.path.join(os.getcwd(), "mmt_browser_profile")
 
     for route_idx, route in enumerate(top_20_routes):
@@ -248,7 +249,6 @@ def run_mmt_multi_scraper():
             
             driver = uc.Chrome(
                 options=options,
-                #version_main=153,
                 use_subprocess=True
             )
             wait = WebDriverWait(driver, 35)
@@ -282,145 +282,165 @@ def run_mmt_multi_scraper():
                             raise Exception("WAF Block (Network Problem) triggered on search URL.")
                             
                         dismiss_overlays(driver)
-                        print("Waiting for flight cards to render...")
-                        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, ".listingCard, .listingCardWrap, div[class*='listingCard']")))
-                        time.sleep(2)
-
-                        # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
-                        driver.execute_script("""
-                            // 1. Click close icon on applied filter chip at top
-                            let chips = Array.from(document.querySelectorAll('div, span')).filter(el => el.innerText && (el.innerText.includes('Non Stop') || el.innerText.includes('Non-stop')));
-                            for (let chip of chips) {
-                                let closeBtn = chip.querySelector('svg, span, [class*="close"], [class*="cross"]');
-                                if (closeBtn) {
-                                    closeBtn.click();
-                                    break;
-                                }
-                            }
-                            // 2. Uncheck sidebar checkbox if present
-                            let checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                            checkboxes.forEach(cb => {
-                                let parent = cb.closest('label') || cb.parentElement;
-                                if (parent && parent.innerText && (parent.innerText.includes('Non Stop') || parent.innerText.includes('Non-stop')) && cb.checked) {
-                                    cb.click();
-                                }
-                            });
-                        """)
-                        time.sleep(3) # Wait for connecting flights to populate
-
-                        js_extract = f"""
-                            let results = [];
-                            let cards = document.querySelectorAll('.listingCard, .listingCardWrap, div[class*="listingCard"]');
-                            
-                            cards.forEach(card => {{
-                                let cardText = card.innerText || "";
-                                let lowerText = cardText.toLowerCase();
-                                let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
-                                
-                                // 1. Strict Origin & Destination Check via Text & Nearby Airports Block
-                                let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b").test(l));
-                                let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b").test(l));
-                                if (!hasOrigin || !hasDest) return;
-                                
-                                if ('{dest}' === 'BOM' && lowerText.includes('navi mumbai') && !lowerText.includes('mumbai')) return;
-                                if ('{origin}' === 'DEL' && (lowerText.includes('ghaziabad') || lowerText.includes('hindon')) && !lowerText.includes('new delhi')) return;
-                                
-                                // 2. Extract Price
-                                let priceLine = lines.find(l => (l.includes('₹') || l.includes('Rs')) && /\\d/.test(l));
-                                if (!priceLine) return;
-                                
-                                let priceMatch = priceLine.match(/[₹|Rs]\\s*([\\d,]+)/);
-                                if (!priceMatch) return;
-                                
-                                let cleanPrice = parseInt(priceMatch[1].replace(/,/g, ''));
-                                if (isNaN(cleanPrice) || cleanPrice < 1000) return;
-                                
-                                // 3. Extract Flight Number & Airline
-                                let flightNum = "";
-                                let airline = "Unknown";
-                                
-                                for (let i = 0; i < Math.min(10, lines.length); i++) {{
-                                    if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
-                                        flightNum = lines[i].replace(/\\s+/, '-'); 
-                                        if (i > 0) airline = lines[i-1]; 
-                                        break;
-                                    }}
-                                }}
-                                
-                                if (!flightNum) return;
-                                if (airline === "Unknown" && lines.length > 2) airline = lines[0];
-                                
-                                // 4. Extract Departure Time
-                                let depTimeNode = card.querySelector('.flightCard_time');
-                                let depTime = "Unknown";
-                                if (depTimeNode && /\\d{{2}}:\\d{{2}}/.test(depTimeNode.innerText)) {{
-                                    depTime = depTimeNode.innerText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/)[0];
-                                }} else {{
-                                    let times = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
-                                    if (times.length > 0) depTime = times[0];
-                                }}
-                                
-                                results.push({{ 
-                                    airline: airline, 
-                                    flight_number: flightNum, 
-                                    departure_time: depTime, 
-                                    total_fare: cleanPrice 
-                                }});
-                            }});
-                            return results;
-                        """
-
-                        all_flights_dict = {}
                         
-                        for scroll_attempt in range(25):
-                            current_flights = driver.execute_script(js_extract)
-                            for f in current_flights:
-                                uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
-                                all_flights_dict[uniq_key] = f
+                        flights = []
+                        # --- RAPID RELOAD MECHANISM ---
+                        for refresh_count in range(1, 5):
+                            print(f"Waiting for flight cards to render (Try {refresh_count}/4)...")
+                            try:
+                                # Reduced wait time here to allow rapid reloads to fire faster
+                                WebDriverWait(driver, 15).until(EC.presence_of_element_located((By.CSS_SELECTOR, ".listingCard, .listingCardWrap, div[class*='listingCard']")))
+                                time.sleep(2)
+        
+                                # --- ROBUST REMOVAL OF PRE-APPLIED NON-STOP FILTER ---
+                                driver.execute_script("""
+                                    // 1. Click close icon on applied filter chip at top
+                                    let chips = Array.from(document.querySelectorAll('div, span')).filter(el => el.innerText && (el.innerText.includes('Non Stop') || el.innerText.includes('Non-stop')));
+                                    for (let chip of chips) {
+                                        let closeBtn = chip.querySelector('svg, span, [class*="close"], [class*="cross"]');
+                                        if (closeBtn) {
+                                            closeBtn.click();
+                                            break;
+                                        }
+                                    }
+                                    // 2. Uncheck sidebar checkbox if present
+                                    let checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                                    checkboxes.forEach(cb => {
+                                        let parent = cb.closest('label') || cb.parentElement;
+                                        if (parent && parent.innerText && (parent.innerText.includes('Non Stop') || parent.innerText.includes('Non-stop')) && cb.checked) {
+                                            cb.click();
+                                        }
+                                    });
+                                """)
+                                time.sleep(3) # Wait for connecting flights to populate
+        
+                                js_extract = f"""
+                                    let results = [];
+                                    let cards = document.querySelectorAll('.listingCard, .listingCardWrap, div[class*="listingCard"]');
+                                    
+                                    cards.forEach(card => {{
+                                        let cardText = card.innerText || "";
+                                        let lowerText = cardText.toLowerCase();
+                                        let lines = cardText.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
+                                        
+                                        // 1. Strict Origin & Destination Check via Text & Nearby Airports Block
+                                        let hasOrigin = lines.some(l => new RegExp("\\\\b{origin}\\\\b").test(l));
+                                        let hasDest = lines.some(l => new RegExp("\\\\b{dest}\\\\b").test(l));
+                                        if (!hasOrigin || !hasDest) return;
+                                        
+                                        if ('{dest}' === 'BOM' && lowerText.includes('navi mumbai') && !lowerText.includes('mumbai')) return;
+                                        if ('{origin}' === 'DEL' && (lowerText.includes('ghaziabad') || lowerText.includes('hindon')) && !lowerText.includes('new delhi')) return;
+                                        
+                                        // 2. Extract Price
+                                        let priceLine = lines.find(l => (l.includes('₹') || l.includes('Rs')) && /\\d/.test(l));
+                                        if (!priceLine) return;
+                                        
+                                        let priceMatch = priceLine.match(/[₹|Rs]\\s*([\\d,]+)/);
+                                        if (!priceMatch) return;
+                                        
+                                        let cleanPrice = parseInt(priceMatch[1].replace(/,/g, ''));
+                                        if (isNaN(cleanPrice) || cleanPrice < 1000) return;
+                                        
+                                        // 3. Extract Flight Number & Airline
+                                        let flightNum = "";
+                                        let airline = "Unknown";
+                                        
+                                        for (let i = 0; i < Math.min(10, lines.length); i++) {{
+                                            if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
+                                                flightNum = lines[i].replace(/\\s+/, '-'); 
+                                                if (i > 0) airline = lines[i-1]; 
+                                                break;
+                                            }}
+                                        }}
+                                        
+                                        if (!flightNum) return;
+                                        if (airline === "Unknown" && lines.length > 2) airline = lines[0];
+                                        
+                                        // 4. Extract Departure Time
+                                        let depTimeNode = card.querySelector('.flightCard_time');
+                                        let depTime = "Unknown";
+                                        if (depTimeNode && /\\d{{2}}:\\d{{2}}/.test(depTimeNode.innerText)) {{
+                                            depTime = depTimeNode.innerText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/)[0];
+                                        }} else {{
+                                            let times = cardText.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
+                                            if (times.length > 0) depTime = times[0];
+                                        }}
+                                        
+                                        results.push({{ 
+                                            airline: airline, 
+                                            flight_number: flightNum, 
+                                            departure_time: depTime, 
+                                            total_fare: cleanPrice 
+                                        }});
+                                    }});
+                                    return results;
+                                """
+        
+                                all_flights_dict = {}
                                 
-                            driver.execute_script("window.scrollBy(0, 900);")
-                            time.sleep(1.2)
+                                for scroll_attempt in range(25):
+                                    current_flights = driver.execute_script(js_extract)
+                                    for f in current_flights:
+                                        uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
+                                        all_flights_dict[uniq_key] = f
+                                        
+                                    driver.execute_script("window.scrollBy(0, 900);")
+                                    time.sleep(1.2)
+                                    
+                                    at_bottom = driver.execute_script("return Math.ceil(window.innerHeight + window.scrollY) >= document.body.scrollHeight;")
+                                    if at_bottom:
+                                        time.sleep(1.5)
+                                        current_flights = driver.execute_script(js_extract)
+                                        for f in current_flights:
+                                            uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
+                                            all_flights_dict[uniq_key] = f
+                                        break
+        
+                                flights = list(all_flights_dict.values())
+                                
+                                if flights:
+                                    break # Extraction successful, exit rapid reload loop
+                                else:
+                                    print("⚠️ Zero flights parsed on this render. Triggering rapid reload...")
+                                    driver.refresh()
+                                    time.sleep(5)
+                                    dismiss_overlays(driver)
+                            except Exception as inner_e:
+                                print(f"⚠️ Page timeout or extraction failure. Triggering rapid reload...")
+                                driver.refresh()
+                                time.sleep(5)
+                                dismiss_overlays(driver)
+                                
+                        if not flights:
+                            raise Exception("Zero valid flights extracted after 4 rapid reloads.")
                             
-                            at_bottom = driver.execute_script("return Math.ceil(window.innerHeight + window.scrollY) >= document.body.scrollHeight;")
-                            if at_bottom:
-                                time.sleep(1.5)
-                                current_flights = driver.execute_script(js_extract)
-                                for f in current_flights:
-                                    uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
-                                    all_flights_dict[uniq_key] = f
-                                break
-
-                        flights = list(all_flights_dict.values())
-                        
-                        if flights:
-                            db_records = []
-                            for f in flights:
-                                base_fare = round(f['total_fare'] * 0.85, 2)
-                                taxes = round(f['total_fare'] * 0.15, 2)
-                                db_records.append((
-                                    f['airline'], route, window, base_fare, taxes, 
-                                    f['total_fare'], "MakeMyTrip", f['departure_time'], f['flight_number']
-                                ))
-                                
-                            with sqlite3.connect('airfare_index.db') as conn:
-                                conn.execute('''
-                                    CREATE TABLE IF NOT EXISTS raw_fares (
-                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
-                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
-                                    )
-                                ''')
-                                conn.executemany('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
-                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                ''', db_records)
-                                conn.commit()
-                                
-                            print(f"✅ Saved {len(flights)} verified flights (Attempt {attempt}).")
-                            success = True
-                            break
-                        else:
-                            raise Exception("Zero valid flights extracted.")
+                        # Save successful flights to DB
+                        db_records = []
+                        for f in flights:
+                            base_fare = round(f['total_fare'] * 0.85, 2)
+                            taxes = round(f['total_fare'] * 0.15, 2)
+                            db_records.append((
+                                f['airline'], route, window, base_fare, taxes, 
+                                f['total_fare'], "MakeMyTrip", f['departure_time'], f['flight_number']
+                            ))
+                            
+                        with sqlite3.connect('airfare_index.db') as conn:
+                            conn.execute('''
+                                CREATE TABLE IF NOT EXISTS raw_fares (
+                                    id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                    airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                    taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                )
+                            ''')
+                            conn.executemany('''
+                                INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            ''', db_records)
+                            conn.commit()
+                            
+                        print(f"✅ Saved {len(flights)} verified flights (Attempt {attempt}).")
+                        success = True
+                        break
                             
                     except Exception as e:
                         print(f"⚠️ Attempt {attempt} failed: {e}")

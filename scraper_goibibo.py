@@ -53,7 +53,7 @@ def run_goibibo_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
     
-    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | All Flights & Dynamic Purging Active)...")
+    print("Launching Goibibo Aggregator Scraper (Pipeline Mode | Robust Regex Extraction Active)...")
 
     user_data_dir = os.path.join(os.getcwd(), "goibibo_browser_profile")
 
@@ -96,7 +96,6 @@ def run_goibibo_scraper():
                         page.goto(url, wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(4500)
 
-                        # 1. RAPID RELOAD CHECK: Spam reload if fake "no flights" page appears
                         for rapid_retry in range(3):
                             body_text_check = page.locator("body").inner_text().lower()
                             if "no flights" in body_text_check or "sold out" in body_text_check or "no results" in body_text_check:
@@ -127,7 +126,6 @@ def run_goibibo_scraper():
 
                         print("📜 Scrolling and extracting virtualized flights...")
                         
-                        # 2. CONDITIONAL EXTRACTION RETRY: Only click mouse if extraction fails
                         flight_records = []
                         for extract_retry in range(2):
                             last_height = page.evaluate("document.body.scrollHeight")
@@ -142,35 +140,43 @@ def run_goibibo_scraper():
                                     if (closeIcon) closeIcon.click();
                                 }""")
                                 
-                                page.evaluate("""() => {
-                                    let cards = document.querySelectorAll('div[data-test="component-clusterItem"], div.ListingCardWrap, div.sbox-flight-item');
-                                    if (cards.length === 0) cards = document.querySelectorAll('div[class*="cluster"]');
+                                # --- ROBUST REGEX-BASED EXTRACTION ---
+                                page.evaluate(f"""() => {{
+                                    let cards = document.querySelectorAll('div[class*="flightCard"], div.ListingCardWrap, div.sbox-flight-item');
                                     
-                                    cards.forEach(card => {
+                                    cards.forEach(card => {{
                                         let text = card.innerText || "";
+                                        let lines = text.split('\\n').map(l => l.trim()).filter(l => l.length > 0);
                                         
-                                        let airlineEl = card.querySelector('.airlineName');
-                                        let airline = airlineEl ? airlineEl.innerText.trim() : "Unknown";
+                                        // Skip nearby airports like Hindon (HDO) if origin is DEL
+                                        let lowerText = text.toLowerCase();
+                                        if ('{dest}' === 'BOM' && lowerText.includes('navi mumbai') && !lowerText.includes('mumbai')) return;
+                                        if ('{origin}' === 'DEL' && (lowerText.includes('ghaziabad') || lowerText.includes('hindon') || lowerText.includes('hdo')) && !lowerText.includes('new delhi')) return;
                                         
-                                        let fliCodeEl = card.querySelector('.fliCode');
-                                        let flightNo = fliCodeEl ? fliCodeEl.innerText.trim().replace(' ', '-') : "";
+                                        let airline = "Unknown";
+                                        let flightNo = "";
                                         
-                                        if (!flightNo) {
-                                            let flightMatch = text.match(/([A-Z0-9]{2})\\s*(\\d{3,4})/i);
-                                            flightNo = flightMatch ? (flightMatch[1].toUpperCase() + "-" + flightMatch[2]) : "";
-                                        }
+                                        for (let i = 0; i < lines.length; i++) {{
+                                            if (/^[A-Z0-9]{{2}}[\\-\\s]?\\d{{3,4}}/i.test(lines[i])) {{
+                                                flightNo = lines[i].replace(/\\s+/, '-'); 
+                                                if (i > 0) airline = lines[i-1]; 
+                                                break;
+                                            }}
+                                        }}
                                         
-                                        let times = text.match(/\\b(\\d{2}:\\d{2})\\b/g) || [];
+                                        if (!flightNo) return;
+                                        
+                                        let times = text.match(/\\b(\\d{{2}}:\\d{{2}})\\b/g) || [];
                                         let depTime = times.length > 0 ? times[0] : "";
                                         
                                         let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
                                         let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 100000);
                                         
-                                        if (flightNo && cleanPrices.length > 0) {
+                                        if (flightNo && cleanPrices.length > 0) {{
                                             let minFare = Math.min(...cleanPrices);
                                             let key = flightNo + "_" + minFare + "_" + depTime;
                                             
-                                            window.scrapedFlights[key] = {
+                                            window.scrapedFlights[key] = {{
                                                 airline: airline,
                                                 flight_no: flightNo,
                                                 departure_time: depTime,
@@ -178,10 +184,10 @@ def run_goibibo_scraper():
                                                 taxes_fees: Math.round(minFare * 0.15),
                                                 total_fare: minFare,
                                                 ota_source: "Goibibo"
-                                            };
-                                        }
-                                    });
-                                }""")
+                                            }};
+                                        }}
+                                    }});
+                                }}""")
                                 
                                 page.evaluate("window.scrollBy(0, 800);")
                                 page.wait_for_timeout(1000)
@@ -193,22 +199,26 @@ def run_goibibo_scraper():
 
                             flight_records = page.evaluate("Object.values(window.scrapedFlights);")
                             
-                            # Check if we successfully got flights or if it's genuinely empty
                             if flight_records:
-                                break  # Success, exit the retry loop
+                                break
                             else:
                                 body_text_post = page.locator("body").inner_text().lower()
                                 if "no flights" in body_text_post or "sold out" in body_text_post or "no results" in body_text_post:
-                                    break  # Genuinely empty page, exit the retry loop
+                                    break
                                 elif extract_retry == 0:
-                                    # We have 0 flights, but the page doesn't say "sold out". 
-                                    # Execute the native mouse click to wake React DOM and retry extraction.
                                     print("🖱️ Flights not extracted despite page load. Simulating native click and retrying...")
                                     page.mouse.click(10, 10)
                                     page.wait_for_timeout(2000)
 
                         if flight_records:
                             with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
+                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
                                 conn.executemany('''
                                     INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
                                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
