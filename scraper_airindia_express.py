@@ -22,16 +22,14 @@ def extract_flights(page, origin, dest):
     results = []
     seen_flight_numbers = set()
     
-    # Reduced timeout to 6s so rapid refreshes fire instantly without hanging
     try:
         page.locator("text=Departing Flights").wait_for(timeout=6000)
     except:
-        pass # Fallback to parsing whatever is on screen if it fails
+        pass 
     
     page.wait_for_timeout(1500)
     text = page.evaluate("() => document.body.innerText")
     
-    # CRITICAL: Exclude Nearby Airports as requested!
     if "Nearby Airports" in text:
         text = text.split("Nearby Airports")[0]
         
@@ -39,7 +37,6 @@ def extract_flights(page, origin, dest):
     
     for i, line in enumerate(lines):
         if "Flight Details" in line:
-            # Found a flight card! Let's extract details.
             flight_num_line = lines[i-1]
             if not re.match(r'^(IX|I5|AI)\s?\d{2,5}', flight_num_line):
                 continue
@@ -48,13 +45,11 @@ def extract_flights(page, origin, dest):
             if flight_number in seen_flight_numbers:
                 continue
                 
-            # Extract Time (Departure is the first time seen before Flight Details)
             times = [lines[j] for j in range(max(0, i-8), i) if re.match(r'^\d{2}:\d{2}$', lines[j])]
             if not times:
                 continue
             dep_time = times[0]
             
-            # Extract Price (Look below Flight Details)
             price_line = None
             for j in range(i+1, min(i+6, len(lines))):
                 if '₹' in lines[j] or 'INR' in lines[j] or re.match(r'^[\d,]+$', lines[j].replace('₹','').strip()):
@@ -95,9 +90,8 @@ def run_airindia_express_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching Native Air India Express Scraper (UI Priming + Rapid Reload + Hard Reset)...")
+    print("Launching Native Air India Express Scraper (UI Priming + Tiered Reloads + Hard Reset)...")
 
-    # Use patchright with headless=False to bypass Akamai/Cloudflare
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         
@@ -119,26 +113,22 @@ def run_airindia_express_scraper():
                     page = context.new_page()
 
                     try:
-                        # Step 1: Prime cookies on homepage and use the full UI flow
                         page.goto("https://www.airindiaexpress.com/", wait_until="domcontentloaded", timeout=60000)
                         page.wait_for_timeout(3000)
                         
                         try:
-                            # Origin
                             page.locator("#new-flight-search-origin-field-text").first.click(timeout=25000)
                             page.wait_for_timeout(500)
                             page.locator("#basic-url-origin").fill(origin)
                             page.wait_for_timeout(1000)
                             page.evaluate(f"() => {{ const items = Array.from(document.querySelectorAll('.flight-list-group-item')); const match = items.find(i => i.innerText.includes('{origin}')); if(match) match.click(); }}")
                             
-                            # Destination
                             page.locator("#new-flight-search-destination-field-text").first.click(timeout=5000)
                             page.wait_for_timeout(500)
                             page.locator("#basic-url-destination").fill(dest)
                             page.wait_for_timeout(1000)
                             page.evaluate(f"() => {{ const items = Array.from(document.querySelectorAll('.flight-list-group-item')); const match = items.find(i => i.innerText.includes('{dest}')); if(match) match.click(); }}")
                             
-                            # Date
                             page.locator("#start-date-input-button").first.click(timeout=10000)
                             page.wait_for_timeout(1000)
                             
@@ -155,10 +145,8 @@ def run_airindia_express_scraper():
                             else:
                                 print(f"Could not find date {target_date_str} in calendar.")
 
-                            # Click Search button
                             page.evaluate("() => { document.querySelectorAll('button').forEach(b => { if((b.innerText || '').toLowerCase().includes('search')) b.click() }) }")
                             
-                            # --- DYNAMIC WAIT TO PREVENT HANGING ---
                             try:
                                 page.wait_for_function("""() => {
                                     let txt = document.body.innerText;
@@ -176,29 +164,39 @@ def run_airindia_express_scraper():
                         
                         flights = extract_flights(page, origin, dest)
 
-                        # --- WAF DETECTION & RAPID RELOAD (NO CDP WIPING) ---
+                        # --- TIERED WAF BYPASS (NO OK BUTTON CLICK) ---
                         if not flights:
                             text = page.evaluate("() => document.body.innerText")
                             if "Take a Break" in text or "Search after some time" in text:
-                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Attempting rapid reloads...")
+                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Executing Tier 1: Single Reload...")
                                 
-                                # Click "Ok" to unfreeze UI, then immediately reload
-                                page.evaluate("() => { document.querySelectorAll('button').forEach(b => { if(b.innerText === 'Ok' || b.innerText === 'OK') b.click(); }); }")
-                                page.wait_for_timeout(500)
+                                # Tier 1: Single page reload directly
+                                page.reload(wait_until="domcontentloaded")
+                                page.wait_for_timeout(5000)
+                                flights = extract_flights(page, origin, dest)
                                 
-                                for refresh_count in range(1, 5):
-                                    print(f"🔄 Rapid reload attempt {refresh_count}...")
-                                    page.reload(wait_until="domcontentloaded")
-                                    page.wait_for_timeout(4500)
-                                    flights = extract_flights(page, origin, dest)
-                                    if flights:
-                                        print(f"✅ Bypass successful on refresh {refresh_count}!")
-                                        break
-                                
-                                # If all 4 reloads fail, trigger the hardware reset
-                                if not flights:
-                                    print("🛡️ Rapid reload failed. Triggering hard browser reset...")
-                                    raise Exception("WAF Rate Limit Block")
+                                if flights:
+                                    print("✅ Bypass successful on Tier 1 reload!")
+                                else:
+                                    text = page.evaluate("() => document.body.innerText")
+                                    if "Take a Break" in text or "Search after some time" in text:
+                                        print("🛡️ WAF Block persists! Executing Tier 2: Frustrated Rapid Reload Spam...")
+                                        
+                                        # Tier 2: Frustrated rapid reload spam (4 clicks back-to-back with 300ms gap)
+                                        for spam_click in range(1, 5):
+                                            print(f"🔄 Frustrated reload click {spam_click}/4...")
+                                            page.reload(wait_until="domcontentloaded")
+                                            page.wait_for_timeout(300) 
+                                            
+                                        print("⏳ Letting the final reload settle...")
+                                        page.wait_for_timeout(8000)
+                                        flights = extract_flights(page, origin, dest)
+                                        
+                                        if flights:
+                                            print("✅ Bypass successful after frustrated reload spam!")
+                                        else:
+                                            print("🛡️ Frustrated reload failed. Executing Tier 3: Hard Browser Reset...")
+                                            raise Exception("WAF Rate Limit Block")
 
                         if flights:
                             print(f"Success: Air India Express {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).")
@@ -253,7 +251,6 @@ def run_airindia_express_scraper():
                             except:
                                 pass
                             time.sleep(5)
-                            # Respawn a completely fresh browser instance
                             browser = p.chromium.launch(headless=False)
                             time.sleep(8)
                         elif attempt == 1:
