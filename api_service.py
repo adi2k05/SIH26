@@ -258,7 +258,7 @@ DOCUMENTATION_HTML = """
             </svg>
             <div class="radar-ping"></div>
         </div>
-        <div class="splash-text">Synchronizing AirSetu Pipeline...</div>
+        <div class="splash-text">Synchronizing AirfareX Pipeline...</div>
         <div class="progress-bar"><div class="progress-fill"></div></div>
     </div>
 
