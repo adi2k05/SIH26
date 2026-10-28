@@ -78,138 +78,188 @@ DOCUMENTATION_HTML = """
             --border: #e2e8f0;
             --get-color: #059669;
             --get-bg: #ecfdf5;
+            --map-bg: #0d1117;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
+        
+        /* --- DYNAMIC BREATHING BACKGROUND --- */
         body {
             font-family: 'Inter', -apple-system, sans-serif;
-            background-color: var(--bg-main);
+            background: linear-gradient(-45deg, #f8fafc, #eff6ff, #f1f5f9, #e0e7ff);
+            background-size: 400% 400%;
+            animation: gradientBG 15s ease infinite;
             color: var(--text-dark);
             line-height: 1.6;
             overflow-x: hidden;
+            scroll-behavior: smooth;
         }
+        @keyframes gradientBG { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
         
+        /* --- AVIATION SPLASH SCREEN --- */
         #splash-screen {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
-            background-color: #0f172a; z-index: 9999;
-            display: flex; flex-direction: column; justify-content: center; align-items: center;
-            transition: opacity 0.6s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.6s;
+            background: radial-gradient(circle at center, #1e293b, #0f172a);
+            z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center;
+            transition: opacity 0.8s cubic-bezier(0.16, 1, 0.3, 1), visibility 0.8s;
         }
-        .loader-ring {
-            width: 48px; height: 48px;
-            border: 4px solid rgba(255, 255, 255, 0.1);
-            border-top-color: #3b82f6; border-radius: 50%;
-            animation: spin 1s cubic-bezier(0.6, 0.2, 0.4, 0.8) infinite;
-            margin-bottom: 20px;
-        }
-        .splash-text { color: #f8fafc; font-family: 'JetBrains Mono', monospace; font-size: 14px; letter-spacing: 0.05em; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-        @keyframes fadeSlideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
-        @keyframes float { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-3px) rotate(4deg); } }
+        .aviation-loader { position: relative; width: 120px; height: 120px; display: flex; justify-content: center; align-items: center; margin-bottom: 24px; }
+        .plane-svg { width: 64px; height: 64px; z-index: 2; animation: planeHover 2s ease-in-out infinite alternate; filter: drop-shadow(0 0 12px rgba(56, 189, 248, 0.8)); }
+        .radar-ping { position: absolute; width: 100%; height: 100%; border: 2px solid #38bdf8; border-radius: 50%; animation: radarPing 1.5s ease-out infinite; opacity: 0; }
+        .splash-text { color: #f8fafc; font-family: 'JetBrains Mono', monospace; font-size: 15px; letter-spacing: 0.1em; font-weight: 600; text-transform: uppercase; text-shadow: 0 0 10px rgba(56, 189, 248, 0.5); }
+        .progress-bar { width: 240px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 4px; margin-top: 20px; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.5); }
+        .progress-fill { height: 100%; background: linear-gradient(90deg, #38bdf8, #2563eb); width: 0%; animation: fillProgress 1.6s cubic-bezier(0.8, 0, 0.2, 1) forwards; box-shadow: 0 0 10px #38bdf8; }
+        
+        @keyframes radarPing { 0% { transform: scale(0.2); opacity: 1; border-width: 4px; } 100% { transform: scale(1.5); opacity: 0; border-width: 1px; } }
+        @keyframes planeHover { 0% { transform: translateY(8px) rotate(-8deg) scale(0.95); } 100% { transform: translateY(-8px) rotate(8deg) scale(1.05); } }
+        @keyframes fillProgress { 0% { width: 0%; } 100% { width: 100%; } }
+        
+        /* --- HEAVY CONTENT ANIMATIONS --- */
+        @keyframes slideInUpHeavy { from { opacity: 0; transform: translateY(60px) scale(0.95); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes pulse-green { 0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); } 70% { box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); } 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); } }
+        @keyframes float { 0%, 100% { transform: translateY(0) rotate(0deg); } 50% { transform: translateY(-4px) rotate(6deg); } }
         @keyframes typing { 0%, 20% { content: '.'; } 40%, 60% { content: '..'; } 80%, 100% { content: '...'; } }
+        @keyframes gradientShift { 0% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } 100% { background-position: 0% 50%; } }
+        @keyframes flow { from { stroke-dashoffset: 24; } to { stroke-dashoffset: 0; } }
+        @keyframes dash { to { stroke-dashoffset: 0; } }
 
-        .animated-section { animation: fadeSlideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; }
-        .delay-1 { animation-delay: 0.2s; }
+        .animated-section { animation: slideInUpHeavy 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards; opacity: 0; will-change: transform, opacity; }
+        .delay-1 { animation-delay: 0.15s; }
         .delay-2 { animation-delay: 0.3s; }
-        .delay-3 { animation-delay: 0.4s; }
-        .delay-4 { animation-delay: 0.5s; }
+        .delay-3 { animation-delay: 0.45s; }
+        .delay-4 { animation-delay: 0.6s; }
 
-        .status-dot { height: 9px; width: 9px; background-color: #10b981; border-radius: 50%; display: inline-block; margin-right: 8px; animation: pulse-green 2s infinite; }
-        .float-emoji { display: inline-block; animation: float 4s ease-in-out infinite; }
+        .status-dot { height: 10px; width: 10px; background-color: #10b981; border-radius: 50%; display: inline-block; margin-right: 8px; animation: pulse-green 2s infinite; }
+        .float-emoji { display: inline-block; animation: float 4s ease-in-out infinite; transform-origin: center; }
         .typing-dots::after { content: '.'; display: inline-block; width: 1em; text-align: left; animation: typing 1.5s infinite; }
 
-        .tooltip { position: relative; cursor: help; border-bottom: 1px dashed var(--text-muted); transition: color 0.2s ease; }
-        .tooltip:hover { color: var(--primary); border-bottom-color: var(--primary); }
-        .tooltip::after {
-            content: attr(data-tooltip); position: absolute; bottom: 130%; left: 50%;
-            transform: translateX(-50%) scale(0.95); opacity: 0; pointer-events: none;
-            background: #1e293b; color: #f8fafc; padding: 8px 12px; border-radius: 6px;
-            font-size: 12px; font-weight: 500; white-space: nowrap;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
-            transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); z-index: 50;
-        }
-        .tooltip::before {
-            content: ''; position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%);
-            border-width: 6px; border-style: solid; border-color: #1e293b transparent transparent transparent;
-            opacity: 0; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
-        }
+        /* Interactive Tooltips */
+        .tooltip { position: relative; cursor: help; border-bottom: 2px dashed var(--text-muted); transition: all 0.3s ease; font-weight: 600; color: #334155; }
+        .tooltip:hover { color: var(--primary); border-bottom-color: var(--primary); text-shadow: 0 0 12px rgba(37, 99, 235, 0.2); }
+        .tooltip::after { content: attr(data-tooltip); position: absolute; bottom: 130%; left: 50%; transform: translateX(-50%) scale(0.9); opacity: 0; pointer-events: none; background: #0f172a; color: #f8fafc; padding: 10px 14px; border-radius: 8px; font-size: 13px; font-weight: 600; white-space: nowrap; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3); transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); z-index: 50; }
+        .tooltip::before { content: ''; position: absolute; bottom: 110%; left: 50%; transform: translateX(-50%) scale(0.9); border-width: 7px; border-style: solid; border-color: #0f172a transparent transparent transparent; opacity: 0; transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1); }
         .tooltip:hover::after, .tooltip:hover::before { opacity: 1; transform: translateX(-50%) scale(1); }
 
-        header {
-            background: rgba(255, 255, 255, 0.95); backdrop-filter: blur(12px);
-            border-bottom: 1px solid var(--border); padding: 16px 48px;
-            display: flex; align-items: center; justify-content: space-between;
-            position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02);
-        }
-        .brand { display: flex; align-items: center; font-weight: 700; font-size: 1.15rem; color: #0f172a; }
-        .badge-version { background: #e0f2fe; color: #0369a1; font-size: 11px; padding: 3px 8px; border-radius: 999px; font-weight: 700; margin-left: 12px; border: 1px solid #bae6fd; }
-        .nav-links { display: flex; gap: 8px; }
-        .nav-links a { color: #475569; text-decoration: none; font-size: 13.5px; font-weight: 600; padding: 8px 14px; border-radius: 8px; transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1); background: transparent; }
-        .nav-links a:hover { background: #f1f5f9; color: #0f172a; }
+        /* Header & Nav */
+        header { background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(16px); border-bottom: 1px solid rgba(226, 232, 240, 0.8); padding: 18px 48px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 4px 20px -2px rgba(0, 0, 0, 0.05); transition: all 0.3s; }
+        .brand { display: flex; align-items: center; font-weight: 800; font-size: 1.25rem; color: #0f172a; letter-spacing: -0.02em; }
+        .badge-version { background: linear-gradient(135deg, #e0f2fe, #bae6fd); color: #0369a1; font-size: 11px; padding: 4px 10px; border-radius: 999px; font-weight: 800; margin-left: 12px; border: 1px solid #7dd3fc; box-shadow: 0 2px 10px rgba(125, 211, 252, 0.3); text-transform: uppercase; letter-spacing: 0.05em; }
+        .nav-links { display: flex; gap: 12px; }
+        .nav-links a { color: #475569; text-decoration: none; font-size: 14px; font-weight: 700; padding: 8px 16px; border-radius: 8px; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); background: transparent; position: relative; overflow: hidden; }
+        .nav-links a::after { content: ''; position: absolute; bottom: 0; left: 0; width: 100%; height: 2px; background: var(--primary); transform: translateX(-100%); transition: transform 0.3s ease; }
+        .nav-links a:hover::after { transform: translateX(0); }
+        .nav-links a:hover { color: #0f172a; background: rgba(241, 245, 249, 0.8); transform: translateY(-1px); }
         
-        .container { max-width: 1320px; margin: 0 auto; padding: 40px 24px 80px; display: grid; grid-template-columns: 280px 1fr; gap: 56px; }
+        .container { max-width: 1380px; margin: 0 auto; padding: 48px 32px 100px; display: grid; grid-template-columns: 280px 1fr; gap: 64px; }
         
-        .sidebar { position: sticky; top: 100px; height: fit-content; padding-right: 16px; }
-        .sidebar h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #94a3b8; margin-bottom: 12px; font-weight: 700; }
-        .sidebar ul { list-style: none; margin-bottom: 32px; }
-        .sidebar li { margin-bottom: 2px; }
-        .sidebar a { display: flex; align-items: center; gap: 10px; color: #475569; text-decoration: none; font-size: 13.5px; padding: 8px 12px; border-radius: 6px; transition: all 0.2s; font-weight: 500; border-left: 3px solid transparent; }
-        .sidebar a:hover { background: #f1f5f9; color: var(--primary-dark); border-left: 3px solid var(--primary); transform: translateX(2px); }
-        .sidebar-icon { font-size: 14px; opacity: 0.7; }
+        /* Sidebar (Heavy Hover Effects) */
+        .sidebar { position: sticky; top: 110px; height: fit-content; padding-right: 16px; }
+        .sidebar h4 { font-size: 12px; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; margin-bottom: 16px; font-weight: 800; margin-top: 32px; }
+        .sidebar h4:first-child { margin-top: 0; }
+        .sidebar ul { list-style: none; margin-bottom: 12px; }
+        .sidebar li { margin-bottom: 4px; }
+        .sidebar a { display: flex; align-items: center; gap: 12px; color: #475569; text-decoration: none; font-size: 14px; padding: 10px 14px; border-radius: 8px; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); font-weight: 600; border-left: 3px solid transparent; position: relative; z-index: 1; }
+        .sidebar a::before { content: ''; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: linear-gradient(90deg, #eff6ff, transparent); border-radius: 8px; z-index: -1; opacity: 0; transition: opacity 0.3s; }
+        .sidebar a:hover::before { opacity: 1; }
+        .sidebar a:hover { color: var(--primary-dark); border-left: 4px solid var(--primary); transform: translateX(6px); box-shadow: 2px 4px 12px rgba(0,0,0,0.03); }
         
-        .uptime-widget { margin-top: auto; padding: 16px; border-radius: 8px; background: #f8fafc; border: 1px solid var(--border); }
-        .uptime-widget .title { font-size: 12px; font-weight: 700; color: #475569; display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-        .uptime-widget .metric { font-size: 20px; font-weight: 800; color: #0f172a; font-family: 'JetBrains Mono', monospace; }
-        .uptime-widget .sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+        .uptime-widget { margin-top: auto; padding: 20px; border-radius: 12px; background: linear-gradient(145deg, #ffffff, #f8fafc); border: 1px solid var(--border); box-shadow: 0 10px 25px -5px rgba(0,0,0,0.05); transition: transform 0.3s, box-shadow 0.3s; }
+        .uptime-widget:hover { transform: translateY(-4px); box-shadow: 0 15px 30px -5px rgba(0,0,0,0.1); border-color: #cbd5e1; }
+        .uptime-widget .title { font-size: 13px; font-weight: 800; color: #334155; display: flex; align-items: center; gap: 8px; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.05em; }
+        .uptime-widget .metric { font-size: 26px; font-weight: 900; color: #0f172a; font-family: 'JetBrains Mono', monospace; text-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .uptime-widget .sub { font-size: 12px; color: #64748b; margin-top: 6px; font-weight: 500; }
 
-        .content { display: flex; flex-direction: column; gap: 40px; }
+        .content { display: flex; flex-direction: column; gap: 56px; }
         
-        .intro h1 { font-size: 2.6rem; font-weight: 800; margin-bottom: 12px; letter-spacing: -0.02em; background: linear-gradient(90deg, #0f172a, #2563eb); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
-        .intro p { color: #475569; font-size: 1.1rem; line-height: 1.7; }
+        /* Animated Gradient Typography */
+        .intro h1 { font-size: 3.2rem; font-weight: 900; margin-bottom: 16px; letter-spacing: -0.03em; background: linear-gradient(90deg, #0f172a, #2563eb, #0ea5e9, #0f172a); background-size: 300% 300%; animation: gradientShift 6s ease infinite; -webkit-background-clip: text; -webkit-text-fill-color: transparent; line-height: 1.2; }
+        .intro p { color: #475569; font-size: 1.15rem; line-height: 1.8; font-weight: 500; }
         
-        .live-status-banner { margin-top: 24px; padding: 18px 24px; background: linear-gradient(145deg, #ecfdf5 0%, #ffffff 100%); border: 1px solid #a7f3d0; border-left: 4px solid #10b981; border-radius: 8px; display: flex; align-items: center; gap: 16px; box-shadow: 0 4px 6px -1px rgba(16, 185, 129, 0.05); }
-        .live-status-banner p { margin: 0; font-size: 14.5px; color: #064e3b; font-weight: 500; line-height: 1.6; }
-        .live-status-banner strong { font-weight: 700; color: #047857; }
+        .live-status-banner { margin-top: 32px; padding: 20px 28px; background: linear-gradient(135deg, #ecfdf5 0%, #ffffff 100%); border: 1px solid #a7f3d0; border-left: 5px solid #10b981; border-radius: 12px; display: flex; align-items: center; gap: 20px; box-shadow: 0 10px 30px -5px rgba(16, 185, 129, 0.15); transition: transform 0.3s; }
+        .live-status-banner:hover { transform: translateY(-2px) scale(1.01); }
+        .live-status-banner p { margin: 0; font-size: 15px; color: #064e3b; font-weight: 600; line-height: 1.7; }
+        .live-status-banner strong { font-weight: 800; color: #047857; background: rgba(16, 185, 129, 0.1); padding: 2px 6px; border-radius: 4px; }
 
-        .meta-box { margin-top: 24px; padding: 24px; background: #ffffff; border: 1px solid var(--border); border-radius: 12px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 32px; box-shadow: 0 2px 4px rgba(0, 0, 0, 0.02); transition: border-color 0.3s ease, box-shadow 0.3s ease; }
-        .meta-box:hover { border-color: #cbd5e1; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05); }
-        .meta-item small { display: block; font-size: 11px; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 8px; letter-spacing: 0.05em;}
-        .meta-item span { font-weight: 600; font-size: 14.5px; line-height: 1.6; color: #1e293b; }
+        /* Cards & Components (Aggressive Hover) */
+        .meta-box { margin-top: 32px; padding: 28px; background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 40px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.03); transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .meta-box:hover { border-color: #93c5fd; box-shadow: 0 20px 40px -10px rgba(37,99,235,0.15); transform: translateY(-5px); background: #ffffff; }
+        .meta-item small { display: block; font-size: 12px; text-transform: uppercase; color: #64748b; font-weight: 800; margin-bottom: 10px; letter-spacing: 0.1em;}
+        .meta-item span { font-weight: 700; font-size: 15.5px; line-height: 1.7; color: #0f172a; }
         
-        .endpoint-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.03); overflow: hidden; transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
-        .endpoint-card:target { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.1); }
-        .endpoint-card:hover { transform: translateY(-3px); box-shadow: 0 12px 20px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.01); border-color: #cbd5e1; }
-        .endpoint-header { padding: 24px; border-bottom: 1px solid var(--border); background: #f8fafc; }
-        .endpoint-title { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-        .method-badge { background: var(--get-bg); color: var(--get-color); font-weight: 700; font-size: 12px; padding: 4px 10px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; box-shadow: 0 1px 2px rgba(5, 150, 105, 0.1); }
-        .endpoint-path { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 1.1rem; color: #0f172a; }
-        .endpoint-desc { color: #475569; font-size: 14.5px; }
-        .endpoint-body { padding: 24px; display: flex; flex-direction: column; gap: 28px; }
-        h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 12px; font-weight: 700; }
-        table { width: 100%; border-collapse: collapse; font-size: 13.5px; text-align: left; }
-        th { background: #f1f5f9; padding: 12px 14px; font-weight: 600; color: #334155; border-bottom: 1px solid var(--border); }
-        td { padding: 14px 14px; border-bottom: 1px solid var(--border); vertical-align: top; transition: background 0.15s; }
+        .route-map-container { background: var(--map-bg); border-radius: 16px; padding: 32px; border: 1px solid #30363d; overflow: hidden; position: relative; box-shadow: inset 0 2px 30px rgba(0,0,0,0.5), 0 10px 30px rgba(0,0,0,0.1); transition: all 0.4s ease; }
+        .route-map-container:hover { border-color: #4b5563; box-shadow: inset 0 2px 30px rgba(0,0,0,0.6), 0 20px 40px rgba(0,0,0,0.2); transform: translateY(-4px) scale(1.005); }
+        .route-map-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
+        .rm-title { color: #f0f6fc; font-size: 18px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; display: flex; align-items: center; gap: 12px;}
+        .rm-title::before { content: ''; display: inline-block; width: 14px; height: 14px; background: #ea580c; border-radius: 50%; box-shadow: 0 0 15px #ea580c, 0 0 5px #ea580c; animation: pulse-green 2s infinite; }
+        .rm-subtitle { color: #8b949e; font-size: 13px; margin-top: 6px; font-weight: 500; }
+        .rm-stats { text-align: right; background: rgba(255,255,255,0.05); padding: 14px 20px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.1); backdrop-filter: blur(5px); }
+        .rm-stats-main { color: #10b981; font-family: 'JetBrains Mono', monospace; font-size: 15px; font-weight: 800; }
+        .rm-stats-sub { color: #8b949e; font-size: 12px; margin-top: 6px; }
+        
+        .svg-map { width: 100%; height: 350px; }
+        .map-node { fill: #38bdf8; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); cursor: pointer; }
+        .map-node:hover { fill: #ffffff; r: 8; filter: drop-shadow(0 0 10px #ffffff); }
+        .map-label { fill: #8b949e; font-size: 11px; font-family: 'Inter', sans-serif; font-weight: 700; pointer-events: none; transition: fill 0.3s; }
+        .map-node:hover + .map-label { fill: #ffffff; }
+        .map-path { stroke: rgba(56, 189, 248, 0.3); stroke-width: 1.5; fill: none; stroke-dasharray: 6 6; animation: flow 15s linear infinite; }
+        .map-path-highlight { stroke: #ea580c; stroke-width: 3; fill: none; filter: drop-shadow(0 0 6px rgba(234, 88, 12, 0.8)); stroke-dasharray: 1000; stroke-dashoffset: 1000; animation: dash 2.5s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        
+        .csv-exporter { background: #ffffff; border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 16px; padding: 32px; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05); margin-bottom: 24px; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .csv-exporter:hover { transform: translateY(-6px) scale(1.01); box-shadow: 0 25px 50px -12px rgba(37, 99, 235, 0.15); border-color: #93c5fd; }
+        .csv-header { margin-bottom: 24px; }
+        .csv-header h3 { color: #0f172a; font-size: 18px; margin-bottom: 8px; font-weight: 800; letter-spacing: -0.01em; }
+        .csv-header p { color: #475569; font-size: 14.5px; font-weight: 500; }
+        .csv-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 32px; }
+        .input-group { display: flex; flex-direction: column; gap: 8px; }
+        .input-group label { font-size: 12px; font-weight: 800; color: #475569; text-transform: uppercase; letter-spacing: 0.05em; }
+        .input-group select { padding: 12px 16px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 14px; font-weight: 600; font-family: 'Inter', sans-serif; color: #0f172a; background-color: #f8fafc; outline: none; transition: all 0.3s; cursor: pointer; }
+        .input-group select:focus, .input-group select:hover { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(37,99,235,0.1); background-color: #ffffff; transform: translateY(-1px); }
+        .btn-download { background: linear-gradient(135deg, var(--primary), var(--primary-dark)); color: white; border: none; padding: 14px 28px; border-radius: 8px; font-size: 15px; font-weight: 800; cursor: pointer; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; box-shadow: 0 4px 15px rgba(37,99,235,0.3); text-transform: uppercase; letter-spacing: 0.05em; }
+        .btn-download:hover { transform: translateY(-3px) scale(1.02); box-shadow: 0 12px 25px rgba(37,99,235,0.4); background: linear-gradient(135deg, #3b82f6, #1e40af); }
+        .btn-download:active { transform: translateY(1px); }
+
+        .endpoint-card { background: var(--bg-card); border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.03); overflow: hidden; margin-bottom: 48px; transition: all 0.4s cubic-bezier(0.16, 1, 0.3, 1); }
+        .endpoint-card:target { border-color: var(--primary); box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.15), 0 20px 40px rgba(37, 99, 235, 0.1); transform: translateY(-5px); }
+        .endpoint-card:hover { transform: translateY(-8px) scale(1.01); box-shadow: 0 25px 50px -12px rgba(37, 99, 235, 0.15); border-color: #93c5fd; }
+        .endpoint-header { padding: 28px; border-bottom: 1px solid var(--border); background: linear-gradient(to right, #f8fafc, #ffffff); }
+        .endpoint-title { display: flex; align-items: center; gap: 14px; margin-bottom: 12px; }
+        .method-badge { background: linear-gradient(135deg, #10b981, #059669); color: #ffffff; font-weight: 800; font-size: 13px; padding: 6px 12px; border-radius: 6px; font-family: 'JetBrains Mono', monospace; box-shadow: 0 4px 10px rgba(16, 185, 129, 0.3); letter-spacing: 0.05em; }
+        .endpoint-path { font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 1.2rem; color: #0f172a; }
+        .endpoint-desc { color: #475569; font-size: 15px; font-weight: 500; }
+        .endpoint-body { padding: 28px; display: flex; flex-direction: column; gap: 32px; }
+        h3 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.08em; color: #64748b; margin-bottom: 16px; font-weight: 800; }
+        table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 14px; text-align: left; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        th { background: #f1f5f9; padding: 14px 16px; font-weight: 700; color: #334155; border-bottom: 2px solid var(--border); text-transform: uppercase; font-size: 12px; letter-spacing: 0.05em; }
+        td { padding: 16px; border-bottom: 1px solid var(--border); vertical-align: top; transition: background 0.2s; font-weight: 500; }
+        tr:last-child td { border-bottom: none; }
         tr:hover td { background: #f8fafc; }
-        .param-name { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #0369a1; }
-        .param-type { font-family: 'JetBrains Mono', monospace; font-size: 12px; color: #64748b; }
-        .param-req { font-size: 11px; font-weight: 700; text-transform: uppercase; padding: 2px 6px; border-radius: 4px; }
+        .param-name { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #0284c7; }
+        .param-type { font-family: 'JetBrains Mono', monospace; font-size: 12.5px; color: #64748b; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; }
+        .param-req { font-size: 11px; font-weight: 800; text-transform: uppercase; padding: 4px 8px; border-radius: 4px; letter-spacing: 0.05em; }
         .req-true { background: #fee2e2; color: #b91c1c; }
         .req-false { background: #f1f5f9; color: #475569; }
         
-        .code-block-wrapper { position: relative; background: var(--code-bg); border-radius: 8px; box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); overflow: hidden; }
-        .copy-btn { position: absolute; top: 12px; right: 12px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: #e2e8f0; padding: 5px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; font-family: 'Inter', sans-serif; cursor: pointer; transition: all 0.2s; z-index: 10; display: flex; align-items: center; gap: 6px; }
-        .copy-btn:hover { background: rgba(255, 255, 255, 0.2); color: #fff; transform: translateY(-1px); }
+        .code-block-wrapper { position: relative; background: linear-gradient(145deg, #0f172a, #1e293b); border-radius: 12px; box-shadow: inset 0 2px 10px rgba(0,0,0,0.5), 0 10px 30px rgba(0,0,0,0.1); overflow: hidden; transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); border: 1px solid #334155; }
+        .code-block-wrapper:hover { transform: scale(1.015); box-shadow: inset 0 2px 10px rgba(0,0,0,0.5), 0 15px 40px rgba(37, 99, 235, 0.2); border-color: #475569; }
+        .copy-btn { position: absolute; top: 14px; right: 14px; background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2); color: #e2e8f0; padding: 6px 14px; border-radius: 6px; font-size: 13px; font-weight: 700; font-family: 'Inter', sans-serif; cursor: pointer; transition: all 0.3s; z-index: 10; display: flex; align-items: center; gap: 8px; backdrop-filter: blur(4px); }
+        .copy-btn:hover { background: rgba(255, 255, 255, 0.25); color: #fff; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0,0,0,0.2); border-color: rgba(255,255,255,0.4); }
         .copy-btn:active { transform: translateY(1px); }
-        .copy-btn.copied { background: #10b981; border-color: #10b981; color: #fff; }
-        .code-block { padding: 20px; padding-top: 40px; font-family: 'JetBrains Mono', monospace; font-size: 13px; overflow-x: auto; line-height: 1.6; color: #f8fafc; }
-        .code-block code { color: #38bdf8; }
-        .code-header { font-size: 12px; color: var(--text-muted); font-weight: 700; margin-bottom: 8px; display: block; text-transform: uppercase; letter-spacing: 0.05em; }
+        .copy-btn.copied { background: #10b981; border-color: #10b981; color: #fff; box-shadow: 0 0 15px rgba(16,185,129,0.5); }
+        .code-block { padding: 24px; padding-top: 50px; font-family: 'JetBrains Mono', monospace; font-size: 13.5px; overflow-x: auto; line-height: 1.7; color: #f8fafc; }
+        .code-block code { color: #38bdf8; text-shadow: 0 0 2px rgba(56,189,248,0.3); }
+        .code-header { font-size: 12px; color: #94a3b8; font-weight: 800; margin-bottom: 10px; display: block; text-transform: uppercase; letter-spacing: 0.1em; }
     </style>
 </head>
 <body>
+    <!-- HEAVY AVIATION SPLASH SCREEN -->
     <div id="splash-screen">
-        <div class="loader-ring"></div>
-        <div class="splash-text">AirfareX Engine Initializing...</div>
+        <div class="aviation-loader">
+            <svg class="plane-svg" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.2-1.1.6L2.5 9l5.4 3.1L4.7 15.3 2 15l-1 1 3.1 2.3 2.3 3.1 1-1-.3-2.7 3.2-3.2 3.1 5.4 2.2-1.2c.4-.2.7-.6.6-1.1z"/>
+            </svg>
+            <div class="radar-ping"></div>
+        </div>
+        <div class="splash-text">Synchronizing AirSetu Pipeline...</div>
+        <div class="progress-bar"><div class="progress-fill"></div></div>
     </div>
 
     <header>
@@ -299,7 +349,7 @@ DOCUMENTATION_HTML = """
                 <div class="endpoint-body">
                     <div>
                         <h3>Python (For ML & Data Science)</h3>
-                        <p style="font-size: 14px; color: #475569; margin-bottom: 12px;">Fetch <span class="tooltip" data-tooltip="Supports up to 50,000 records per API call">paginated records</span> into a Pandas DataFrame for modeling.</p>
+                        <p style="font-size: 15px; color: #475569; margin-bottom: 14px; font-weight: 500;">Fetch <span class="tooltip" data-tooltip="Supports up to 50,000 records per API call">paginated records</span> into a Pandas DataFrame for modeling.</p>
                         
                         <div class="code-block-wrapper">
                             <button class="copy-btn" onclick="copyCode(this)">
@@ -324,7 +374,7 @@ else:
                         </div>
                     </div>
                     
-                    <div style="margin-top: 16px;">
+                    <div style="margin-top: 20px;">
                         <h3>cURL (For Terminal Testing)</h3>
                         <div class="code-block-wrapper">
                             <button class="copy-btn" onclick="copyCode(this)">
@@ -573,7 +623,7 @@ else:
                 const splash = document.getElementById('splash-screen');
                 splash.style.opacity = '0';
                 splash.style.visibility = 'hidden';
-            }, 1800); 
+            }, 2000); 
         });
 
         // Copy Code Functionality
