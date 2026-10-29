@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import time
 import os
 import re
+import random
 
 def is_already_scraped(route, window, source):
     with sqlite3.connect('airfare_index.db') as conn:
@@ -90,7 +91,7 @@ def run_airindia_express_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching Native Air India Express Scraper (UI Priming + Tiered Reloads + Hard Reset)...")
+    print("Launching Native Air India Express Scraper (UI Priming + Randomized Intercept Clicks + Hard Reset)...")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
@@ -145,8 +146,21 @@ def run_airindia_express_scraper():
                             else:
                                 print(f"Could not find date {target_date_str} in calendar.")
 
+                            # Click Search button
                             page.evaluate("() => { document.querySelectorAll('button').forEach(b => { if((b.innerText || '').toLowerCase().includes('search')) b.click() }) }")
                             
+                            # --- INTERCEPT CLICK LOGIC (RANDOMIZED DELAYS & COORDS) ---
+                            page.wait_for_timeout(1500)
+                            try:
+                                left_coords = [(202, 253), (249, 389), (168, 497), (223, 556), (287, 466)]
+                                click_delays = [143, 212, 297, 303, 381, 426]
+                                print("🖱️ Executing randomized intercept clicks during load to simulate human behavior...")
+                                for x, y in left_coords:
+                                    page.mouse.click(x, y)
+                                    page.wait_for_timeout(random.choice(click_delays))
+                            except:
+                                pass
+
                             try:
                                 page.wait_for_function("""() => {
                                     let txt = document.body.innerText;
@@ -154,7 +168,7 @@ def run_airindia_express_scraper():
                                            txt.includes('Take a Break') || 
                                            txt.includes('Search after some time') || 
                                            txt.includes('We couldn\\'t find any flights');
-                                }""", timeout=25000)
+                                }""", timeout=35000)
                             except:
                                 pass
                             page.wait_for_timeout(1500)
@@ -164,39 +178,33 @@ def run_airindia_express_scraper():
                         
                         flights = extract_flights(page, origin, dest)
 
-                        # --- TIERED WAF BYPASS (NO OK BUTTON CLICK) ---
+                        # --- REVISED WAF BYPASS: SINGLE RELOAD ONLY ---
                         if not flights:
                             text = page.evaluate("() => document.body.innerText")
                             if "Take a Break" in text or "Search after some time" in text:
-                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Executing Tier 1: Single Reload...")
+                                print("🛡️ WAF Rate Limit detected ('Take a Break')! Executing Single Intercept Reload...")
                                 
-                                # Tier 1: Single page reload directly
                                 page.reload(wait_until="domcontentloaded")
-                                page.wait_for_timeout(5000)
+                                
+                                page.wait_for_timeout(1500)
+                                try:
+                                    left_coords = [(202, 253), (249, 389), (168, 497), (223, 556), (287, 466)]
+                                    click_delays = [143, 212, 297, 303, 381, 426]
+                                    print("🖱️ Executing randomized intercept clicks during reload...")
+                                    for x, y in left_coords:
+                                        page.mouse.click(x, y)
+                                        page.wait_for_timeout(random.choice(click_delays))
+                                except:
+                                    pass
+                                    
+                                page.wait_for_timeout(8000)
                                 flights = extract_flights(page, origin, dest)
                                 
                                 if flights:
-                                    print("✅ Bypass successful on Tier 1 reload!")
+                                    print("✅ Bypass successful on single reload!")
                                 else:
-                                    text = page.evaluate("() => document.body.innerText")
-                                    if "Take a Break" in text or "Search after some time" in text:
-                                        print("🛡️ WAF Block persists! Executing Tier 2: Frustrated Rapid Reload Spam...")
-                                        
-                                        # Tier 2: Frustrated rapid reload spam (4 clicks back-to-back with 300ms gap)
-                                        for spam_click in range(1, 5):
-                                            print(f"🔄 Frustrated reload click {spam_click}/4...")
-                                            page.reload(wait_until="domcontentloaded")
-                                            page.wait_for_timeout(300) 
-                                            
-                                        print("⏳ Letting the final reload settle...")
-                                        page.wait_for_timeout(8000)
-                                        flights = extract_flights(page, origin, dest)
-                                        
-                                        if flights:
-                                            print("✅ Bypass successful after frustrated reload spam!")
-                                        else:
-                                            print("🛡️ Frustrated reload failed. Executing Tier 3: Hard Browser Reset...")
-                                            raise Exception("WAF Rate Limit Block")
+                                    print("🛡️ Single reload failed. Executing Hard Browser Reset...")
+                                    raise Exception("WAF Rate Limit Block")
 
                         if flights:
                             print(f"Success: Air India Express {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).")

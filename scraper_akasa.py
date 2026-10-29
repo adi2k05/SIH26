@@ -38,7 +38,6 @@ def run_akasa_scraper():
     user_data_dir = os.path.join(os.getcwd(), "akasa_browser_profile")
 
     with sync_playwright() as p:
-        # --- DYNAMIC HEADLESS INJECTION ---
         context = p.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
             channel="chrome",  
@@ -53,7 +52,6 @@ def run_akasa_scraper():
         for route in top_20_routes:
             origin, dest = route.split("-")
             
-            # --- BYPASS NON-OPERATED ROUTES INSTANTLY ---
             if route in unsupported_akasa_routes:
                 print(f"ℹ️ {route} is unsupported by Akasa (operates at GOX, not GOI). Logging NULL.")
                 for window in advance_windows:
@@ -124,58 +122,65 @@ def run_akasa_scraper():
                                 
                         page.wait_for_timeout(1500)
                         
-                        # --- DATE PICKER ---
+                        # --- DATE PICKER SLIDER (FIXED) ---
                         page.get_by_placeholder(re.compile(r"Departure date", re.I)).click(force=True)
                         page.wait_for_timeout(1500)
                         
                         target_month_year = future_date_obj.strftime("%B %Y")
                         target_day = str(int(future_date_obj.strftime("%d")))
                         
-                        for _ in range(5):
-                            if page.get_by_text(target_month_year, exact=True).is_visible():
+                        # Scroll through calendar until the correct month header is visible
+                        for _ in range(6):
+                            # Read currently visible headers directly from the DOM class
+                            displayed_months = page.locator(".react-datepicker__current-month").all_inner_texts()
+                            if any(target_month_year in m.strip() for m in displayed_months):
                                 break
-                            page.evaluate('''() => {
-                                let btns = Array.from(document.querySelectorAll('button, svg'));
-                                let nextBtn = btns.find(b => b.className && typeof b.className === 'string' && b.className.toLowerCase().includes('next') || (b.getAttribute('aria-label') || '').toLowerCase().includes('next'));
-                                if (nextBtn) { let parent = nextBtn.closest('button'); if(parent) parent.click(); else nextBtn.click(); }
-                            }''')
+                            
+                            # Explicitly click the 'Next Month' button shown in the provided DOM snippet
+                            try:
+                                page.locator('button.react-datepicker__navigation--next, button[aria-label="Next Month"]').first.click(timeout=2000)
+                            except Exception:
+                                page.evaluate('''() => {
+                                    let nextBtn = document.querySelector('button.react-datepicker__navigation--next, button[aria-label="Next Month"]');
+                                    if (nextBtn) nextBtn.click();
+                                }''')
                             page.wait_for_timeout(800)
                         
+                        # --- ROBUST DOM CLICK LOGIC FOR AKASA DATEPICKER (FIXED) ---
                         js_click_logic = f"""
                         () => {{
                             let targetDay = '{target_day}';
-                            let targetMonthYear = '{target_month_year}';
-                            let monthHeaders = Array.from(document.querySelectorAll('*')).filter(el => el.textContent.trim() === targetMonthYear);
-                            for (let header of monthHeaders) {{
-                                let container = header.parentElement;
-                                for (let i = 0; i < 6; i++) {{
-                                    if (container) {{
-                                        let leafNodes = Array.from(container.querySelectorAll('*')).filter(el => el.textContent.trim() === targetDay && el.children.length === 0);
-                                        if (leafNodes.length > 0) {{
-                                            let target = leafNodes[0];
-                                            target.click();
-                                            target.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
-                                            return true;
-                                        }}
-                                        let cells = container.querySelectorAll('div, button, td');
-                                        for (let cell of cells) {{
-                                            if (cell.innerText) {{
-                                                let lines = cell.innerText.trim().split('\\n');
-                                                if (lines.length > 0 && lines[0].trim() === targetDay) {{
-                                                    cell.click();
-                                                    cell.dispatchEvent(new MouseEvent('click', {{ bubbles: true, cancelable: true, view: window }}));
-                                                    return true;
-                                                }}
-                                            }}
-                                        }}
+                            let targetMonth = '{future_date_obj.strftime("%B")}';
+                            let targetYear = '{future_date_obj.year}';
+                            
+                            // Matches: "Choose Friday, October 30th, 2026"
+                            let regex = new RegExp(targetMonth + ' ' + targetDay + '(st|nd|rd|th)?,?\\\\s+' + targetYear, 'i');
+                            
+                            // Exclude disabled dates and dates from adjacent overflowing months
+                            let cells = document.querySelectorAll('.react-datepicker__day:not(.react-datepicker__day--outside-month)');
+                            
+                            for (let c of cells) {{
+                                let aria = c.getAttribute('aria-label') || '';
+                                if (regex.test(aria)) {{
+                                    c.click();
+                                    return true;
+                                }}
+                                
+                                // Fallback checking the rendered inner text inside the cell
+                                if (aria.includes(targetMonth) && aria.includes(targetYear)) {{
+                                    let textLines = c.innerText.trim().split('\\n');
+                                    if (textLines[0].trim() === targetDay) {{
+                                        c.click();
+                                        return true;
                                     }}
-                                    if (container) container = container.parentElement;
                                 }}
                             }}
                             return false;
                         }}
                         """
-                        page.evaluate(js_click_logic)
+                        if not page.evaluate(js_click_logic):
+                            raise Exception(f"Failed to find or click date: {target_day} {target_month_year}")
+                            
                         page.wait_for_timeout(1000)
                         
                         page.get_by_text("Search Flights").first.click(force=True)
@@ -211,64 +216,72 @@ def run_akasa_scraper():
                         
                         page.wait_for_timeout(2000)
 
-                        # --- ROBUST ACCORDION CARD EXTRACTION ---
-                        valid_flights = page.evaluate("""() => {
-                            let records = [];
-                            let cards = Array.from(document.querySelectorAll('div[id*="destinationsAccordion"], div[data-testid*="destinationsAccordion"]'));
-                            
-                            cards.forEach(card => {
-                                let text = card.innerText || "";
-                                let flightMatch = text.match(/QP\\s*(\\d{3,4})/i);
-                                if (!flightMatch) return;
+                        # --- EXTRACTION WITH 1-TIME RELOAD FALLBACK ---
+                        final_flights = []
+                        for extract_retry in range(2):
+                            valid_flights = page.evaluate("""() => {
+                                let records = [];
+                                let cards = Array.from(document.querySelectorAll('div[id*="destinationsAccordion"], div[data-testid*="destinationsAccordion"]'));
                                 
-                                let flightNo = "QP-" + flightMatch[1];
-                                let timeMatches = text.match(/\\b\\d{2}:\\d{2}\\b/g) || [];
-                                let depTime = timeMatches.length > 0 ? timeMatches[0] : "";
-                                
-                                let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
-                                let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
-                                
-                                if (flightNo && depTime && cleanPrices.length > 0) {
-                                    records.push({
-                                        flight_no: flightNo,
-                                        departure_time: depTime,
-                                        fare: Math.min(...cleanPrices)
-                                    });
-                                }
-                            });
-                            return records;
-                        }""")
+                                cards.forEach(card => {
+                                    let text = card.innerText || "";
+                                    let flightMatch = text.match(/QP\\s*(\\d{3,4})/i);
+                                    if (!flightMatch) return;
+                                    
+                                    let flightNo = "QP-" + flightMatch[1];
+                                    let timeMatches = text.match(/\\b\\d{2}:\\d{2}\\b/g) || [];
+                                    let depTime = timeMatches.length > 0 ? timeMatches[0] : "";
+                                    
+                                    let priceMatches = text.match(/[₹|Rs]\\s*([\\d,]+)/g) || [];
+                                    let cleanPrices = priceMatches.map(p => parseInt(p.replace(/[^0-9]/g, ''))).filter(p => p > 1500 && p < 75000);
+                                    
+                                    if (flightNo && depTime && cleanPrices.length > 0) {
+                                        records.push({
+                                            flight_no: flightNo,
+                                            departure_time: depTime,
+                                            fare: Math.min(...cleanPrices)
+                                        });
+                                    }
+                                });
+                                return records;
+                            }""")
 
-                        # --- FALLBACK TEXT BLOCK EXTRACTION (Guarantees capture if DOM classes change) ---
-                        if not valid_flights:
-                            body_text = page.locator("body").inner_text()
-                            blocks = re.split(r'(?=(?:QP\s*\d{3,4}))', body_text, flags=re.IGNORECASE)
-                            for block in blocks:
-                                fl_match = re.search(r'QP\s*(\d{3,4})', block, re.IGNORECASE)
-                                if not fl_match:
-                                    continue
-                                fl_no = f"QP-{fl_match.group(1)}"
-                                
-                                times = re.findall(r'\b\d{2}:\d{2}\b', block)
-                                dep_time = times[0] if times else ""
-                                
-                                prices = [int(re.sub(r'[^\d]', '', p)) for p in re.findall(r'[₹|Rs]\s*[\d,]+', block)]
-                                valid_prices = [p for p in prices if 1500 < p < 75000]
-                                
-                                if fl_no and dep_time and valid_prices:
-                                    valid_flights.append({
-                                        'flight_no': fl_no,
-                                        'departure_time': dep_time,
-                                        'fare': min(valid_prices)
-                                    })
+                            if not valid_flights:
+                                body_text = page.locator("body").inner_text()
+                                blocks = re.split(r'(?=(?:QP\s*\d{3,4}))', body_text, flags=re.IGNORECASE)
+                                for block in blocks:
+                                    fl_match = re.search(r'QP\s*(\d{3,4})', block, re.IGNORECASE)
+                                    if not fl_match:
+                                        continue
+                                    fl_no = f"QP-{fl_match.group(1)}"
+                                    
+                                    times = re.findall(r'\b\d{2}:\d{2}\b', block)
+                                    dep_time = times[0] if times else ""
+                                    
+                                    prices = [int(re.sub(r'[^\d]', '', p)) for p in re.findall(r'[₹|Rs]\s*[\d,]+', block)]
+                                    valid_prices = [p for p in prices if 1500 < p < 75000]
+                                    
+                                    if fl_no and dep_time and valid_prices:
+                                        valid_flights.append({
+                                            'flight_no': fl_no,
+                                            'departure_time': dep_time,
+                                            'fare': min(valid_prices)
+                                        })
 
-                        # --- DEDUPLICATION ---
-                        unique = {}
-                        for r in valid_flights:
-                            key = f"{r['flight_no']}_{r['departure_time']}"
-                            if key not in unique or r['fare'] < unique[key]['fare']:
-                                unique[key] = r
-                        final_flights = list(unique.values())
+                            unique = {}
+                            for r in valid_flights:
+                                key = f"{r['flight_no']}_{r['departure_time']}"
+                                if key not in unique or r['fare'] < unique[key]['fare']:
+                                    unique[key] = r
+                            final_flights = list(unique.values())
+
+                            # --- 1-TIME RELOAD FALLBACK ---
+                            if final_flights:
+                                break
+                            elif extract_retry == 0:
+                                print("⚠️ Zero valid flights extracted. Reloading page once to retry...")
+                                page.reload(wait_until="domcontentloaded", timeout=45000)
+                                page.wait_for_timeout(6000)
 
                         if final_flights:
                             with sqlite3.connect('airfare_index.db') as conn:
