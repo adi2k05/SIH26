@@ -1,12 +1,19 @@
-import sqlite3
-from patchright.sync_api import sync_playwright
-from datetime import datetime, timedelta
-import time
 import os
+import sqlite3
 import re
-import random
+import time
+from datetime import datetime, timedelta
+
+# Use patchright instead of playwright to bypass WAF, just like go.py did successfully
+from patchright.sync_api import sync_playwright
 
 def is_already_scraped(route, window, source):
+    if os.environ.get("FORCE_RESCRAPE") == "1":
+        return False
+    
+    if not os.path.exists('airfare_index.db'):
+        return False
+        
     with sqlite3.connect('airfare_index.db') as conn:
         c = conn.cursor()
         try:
@@ -19,166 +26,68 @@ def is_already_scraped(route, window, source):
         except sqlite3.OperationalError:
             return False
 
-def clear_browser_data(page):
-    try:
-        client = page.context.new_cdp_session(page)
-        client.send('Network.clearBrowserCookies')
-        client.send('Network.clearBrowserCache')
-        page.evaluate("window.localStorage.clear(); window.sessionStorage.clear();")
-        print("🧹 CDP: Cleared poisoned browser session storage and Akamai cookies.", flush=True)
-    except Exception as e:
-        pass
-
-def click_red_zone_while_loading(page, max_timeout=35.0):
-    """
-    Simulates authentic human clicking inside the red scribble zone on the left margin.
-    Outputs terminal logs on EVERY click showing coordinates, hold time, delay, and page state.
-    """
-    start_time = time.time()
-    click_count = 0
-    
-    viewport = page.viewport_size or {"width": 1920, "height": 1080}
-    w, h = viewport["width"], viewport["height"]
-    
-    # Red scribble zone coordinates on the left margin
-    x_min, x_max = int(w * 0.03), int(w * 0.16)
-    y_min, y_max = int(h * 0.20), int(h * 0.80)
-
-    print(f"🖱️ [Red-Zone Clicker] Started! Zone bounds: X[{x_min}..{x_max}], Y[{y_min}..{y_max}] (Viewport: {w}x{h})", flush=True)
-
-    # Initial position in red zone
-    curr_x = random.randint(x_min, x_max)
-    curr_y = random.randint(y_min, y_max)
-    try:
-        page.mouse.move(curr_x, curr_y)
-    except Exception:
-        pass
-
-    while time.time() - start_time < max_timeout:
-        try:
-            txt = page.evaluate("() => document.body ? document.body.innerText : ''")
-        except Exception:
-            txt = ""
-
-        # 1. Real flight data loaded
-        if "Flight Details" in txt or "Departing Flights" in txt:
-            elapsed = time.time() - start_time
-            print(f"🎉 Flights rendered! (Delivered {click_count} clicks in red zone in {elapsed:.2f}s)", flush=True)
-            return "SUCCESS"
-
-        # 2. Officially no flights
-        if "We couldn't find any flights" in txt or "No flights scheduled" in txt:
-            elapsed = time.time() - start_time
-            print(f"ℹ️ 'No flights' detected after {click_count} clicks in {elapsed:.2f}s.", flush=True)
-            return "NO_FLIGHTS"
-
-        # 3. WAF Take a Break screen
-        if "Take a Break" in txt or "Search after some time" in txt:
-            elapsed = time.time() - start_time
-            print(f"🛡️ WAF 'Take a Break' detected on page after {click_count} clicks in {elapsed:.2f}s!", flush=True)
-            return "WAF_BLOCKED"
-
-        # Natural human drift: smooth movement between nearby points in the red zone
-        drift_x = random.randint(-25, 25)
-        drift_y = random.randint(-45, 45)
-        target_x = max(x_min, min(x_max, curr_x + drift_x))
-        target_y = max(y_min, min(y_max, curr_y + drift_y))
-
-        # Interpolate mouse movement to generate authentic mousemove telemetry
-        steps = random.randint(3, 5)
-        for s in range(1, steps + 1):
-            ix = curr_x + (target_x - curr_x) * (s / steps)
-            iy = curr_y + (target_y - curr_y) * (s / steps)
-            try:
-                page.mouse.move(ix, iy)
-            except Exception:
-                pass
-            time.sleep(random.uniform(0.008, 0.014))
-
-        curr_x, curr_y = int(target_x), int(target_y)
-
-        # Human click with natural hold duration
-        hold_duration = random.uniform(0.05, 0.09)
-        delay_duration = random.uniform(0.16, 0.28)
-
-        try:
-            page.mouse.down()
-            time.sleep(hold_duration)
-            page.mouse.up()
-            click_count += 1
-        except Exception:
-            pass
-
-        # Terminal output for EVERY click with coordinates and timing
-        elapsed_now = time.time() - start_time
-        hold_ms = int(hold_duration * 1000)
-        delay_ms = int(delay_duration * 1000)
-        print(f"  🖱️ [Click #{click_count:02d} | +{elapsed_now:.2f}s] Coords: ({curr_x}, {curr_y}) | Hold: {hold_ms}ms | Next Delay: {delay_ms}ms | State: SKELETAL_LOADING", flush=True)
-
-        # Human tapping cadence between clicks
-        time.sleep(delay_duration)
-
-    print(f"⚠️ [Red-Zone Clicker] Timed out after {max_timeout}s.", flush=True)
-    return "TIMEOUT"
-
 def extract_flights(page, origin, dest):
+    cards = page.evaluate('''() => {
+        const btns = Array.from(document.querySelectorAll('*')).filter(
+            e => e.textContent.trim() === 'Flight Details' && e.offsetParent !== null && e.children.length === 0
+        );
+        return btns.map(b => {
+            let card = b.closest('mat-card');
+            if (card) return card.innerText;
+            
+            // fallback
+            card = b;
+            for (let i = 0; i < 12; i++) { if (card.parentElement) card = card.parentElement; }
+            return card.innerText;
+        });
+    }''')
+
     results = []
     seen_flight_numbers = set()
-    
-    page.wait_for_timeout(1000)
-    text = page.evaluate("() => document.body.innerText")
-    
-    if "Nearby Airports" in text:
-        text = text.split("Nearby Airports")[0]
-        
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    
-    for i, line in enumerate(lines):
-        if "Flight Details" in line:
-            flight_num_line = lines[i-1]
-            if not re.match(r'^(IX|I5|AI)\s?\d{2,5}', flight_num_line):
-                continue
-                
-            flight_number = flight_num_line.replace(" ", "-")
-            if flight_number in seen_flight_numbers:
-                continue
-                
-            times = [lines[j] for j in range(max(0, i-8), i) if re.match(r'^\d{2}:\d{2}$', lines[j])]
-            if not times:
-                continue
-            dep_time = times[0]
-            
-            price_line = None
-            for j in range(i+1, min(i+6, len(lines))):
-                if '₹' in lines[j] or 'INR' in lines[j] or re.match(r'^[\d,]+$', lines[j].replace('₹','').strip()):
-                    price_line = lines[j]
-                    break
-                    
-            if not price_line:
-                continue
-                
-            try:
-                total_fare = float(re.sub(r'[^\d.]', '', price_line))
-                if not (1500 < total_fare < 75000):
-                    continue
-            except:
-                continue
-                
-            seen_flight_numbers.add(flight_number)
-            results.append({
-                "airline": "Air India Express",
-                "flight_number": flight_number,
-                "route": f"{origin}-{dest}",
-                "base_fare": round(total_fare * 0.85, 2),
-                "taxes_fees": round(total_fare * 0.15, 2),
-                "total_fare": total_fare,
-                "ota_source": "Air India Express Direct",
-                "departure_time": dep_time
-            })
-            
+    for raw in cards:
+        lines = [l.strip() for l in raw.split('\n') if l.strip()]
+
+        fn_idx = next((i for i, l in enumerate(lines) if re.match(r'^(AI|IX|UK)\s?\d{2,5}', l)), None)
+        if fn_idx is None:
+            continue
+        flight_number = lines[fn_idx].replace(" ", "-") # normalize flight number
+        if flight_number in seen_flight_numbers:
+            continue
+
+        dep_time = next((l for l in lines[fn_idx:] if re.match(r'^\d{2}:\d{2}$', l)), None)
+        if not dep_time:
+            continue
+
+
+
+        if origin not in lines or dest not in lines:
+            continue
+
+        if "INR" not in lines:
+            continue
+        inr_idx = lines.index("INR")
+        price_str = lines[inr_idx + 1] if len(lines) > inr_idx + 1 else None
+        if not price_str or not re.match(r'^[\d,]+$', price_str):
+            continue
+        total_fare = float(price_str.replace(",", ""))
+        if not (1500 < total_fare < 75000):
+            continue
+
+        seen_flight_numbers.add(flight_number)
+        results.append({
+            "airline": "Air India",
+            "flight_number": flight_number,
+            "route": f"{origin}-{dest}",
+            "base_fare": round(total_fare * 0.85, 2),
+            "taxes_fees": round(total_fare * 0.15, 2),
+            "total_fare": total_fare,
+            "ota_source": "Air India Direct",
+            "departure_time": dep_time
+        })
+
     return results
 
-def run_airindia_express_scraper():
+def run_airindia_scraper():
     advance_windows = [1, 7, 15, 30, 45]
     top_20_routes = [
         "DEL-BOM", "BOM-DEL", "DEL-BLR", "BLR-DEL", 
@@ -188,107 +97,186 @@ def run_airindia_express_scraper():
         "BLR-HYD", "HYD-BLR", "DEL-AMD", "AMD-DEL"
     ]
 
-    print("Launching Native Air India Express (Direct URL + Live Click Telemetry)...", flush=True)
+    print("Launching Air India Scraper (Full Flight Extraction mode)...")
 
+    # Use patchright instead of stealth to effectively bypass anti-bot challenges
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)
-        
+        is_headless = os.environ.get("HEADLESS_MODE") == "1"
+        browser = p.chromium.launch(headless=is_headless)
+
         for route in top_20_routes:
             origin, dest = route.split("-")
 
             for window in advance_windows:
-                if is_already_scraped(route, window, "Air India Express Direct"):
-                    print(f"Skipping Air India Express: {route} | T+{window} already collected today.", flush=True)
+                if is_already_scraped(route, window, "Air India Direct"):
+                    print(f"Skipping Air India: {route} | T+{window} already collected today.")
                     continue
 
                 future_date_obj = datetime.now() + timedelta(days=window)
+                target_aria = f"{future_date_obj.month}/{future_date_obj.day}/{future_date_obj.year}"
                 target_iso = future_date_obj.strftime("%Y-%m-%d")
 
-                print(f"\n--- Air India Express Scraping: {route} | T+{window} Days ({target_iso}) ---", flush=True)
+                print(f"--- Air India Scraping: {route} | T+{window} Days ({target_iso}) ---")
 
                 for attempt in range(1, 3):
                     context = browser.new_context(viewport={"width": 1920, "height": 1080})
                     page = context.new_page()
 
                     try:
-                        # Step 1: Prime cookies on homepage
-                        page.goto("https://www.airindiaexpress.com/", wait_until="domcontentloaded", timeout=60000)
+                        page.goto("https://www.airindia.com/", wait_until="domcontentloaded", timeout=600000)
+                        page.wait_for_timeout(9000)
+
+                        try:
+                            page.get_by_text("Accept All", exact=True).first.click(timeout=6000)
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(1500)
+
+                        try:
+                            page.locator('#simplifiedLoginModal button.btn-close').first.click(timeout=4000)
+                        except Exception:
+                            pass
+                        page.wait_for_timeout(500)
+
+                        page.get_by_text("One Way", exact=True).first.click(timeout=6000)
+                        page.wait_for_timeout(500)
+
+                        origin_input = page.locator('input.ai-autocomplete-input').nth(0)
+                        origin_input.click()
+                        page.keyboard.press("Control+A")
+                        page.keyboard.press("Backspace")
+                        page.wait_for_timeout(300)
+                        page.keyboard.type(origin, delay=150)
                         page.wait_for_timeout(2500)
-                        
-                        # Step 2: Direct URL Injection (wait_until="commit" so clicks start immediately as skeleton paints)
-                        search_url = f"https://www.airindiaexpress.com/flight-availability?/{origin}/{dest}/{target_iso}/N/1/0/0/0/0/0/0/O/N/INR/ST/0"
-                        print(f"🔗 Navigating directly to search URL...", flush=True)
-                        page.goto(search_url, wait_until="commit", timeout=60000)
-                        
-                        # Step 3: CONTINUOUS RED-ZONE CLICKING WHILE SKELETON LOADS
-                        result_state = click_red_zone_while_loading(page, max_timeout=35.0)
-                        page.wait_for_timeout(800)
-                        text = page.evaluate("() => document.body ? document.body.innerText : ''")
+                        page.locator("mat-option").first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
 
-                        # Step 4: INSTANT WAF DETECTION & COOL DOWN (Avoid spamming rapid reloads)
-                        if result_state == "WAF_BLOCKED" or "Take a Break" in text or "Search after some time" in text:
-                            print("🛡️ WAF Rate Limit detected ('Take a Break')! Purging CDP and resting 16s to reset Akamai velocity...", flush=True)
-                            clear_browser_data(page)
-                            time.sleep(16)  # Let Akamai sliding-window burst counter expire
+                        dest_input = page.locator('input.ai-autocomplete-input').nth(1)
+                        dest_input.click()
+                        page.wait_for_timeout(300)
+                        page.keyboard.type(dest, delay=150)
+                        page.wait_for_timeout(2500)
+                        page.locator("mat-option").first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
+
+                        page.get_by_text("Select Date", exact=True).first.click(timeout=6000)
+                        page.wait_for_timeout(1500)
+
+                        for _ in range(4):
+                            if page.locator(f'button.mat-calendar-body-cell[aria-label="{target_aria}"]').count() > 0:
+                                break
+                            page.get_by_role("button", name="Next month").first.click()
+                            page.wait_for_timeout(700)
+
+                        page.locator(f'button.mat-calendar-body-cell[aria-label="{target_aria}"]').first.click(timeout=6000)
+                        page.wait_for_timeout(1200)
+
+                        page.get_by_role("button", name="Search", exact=True).first.click(timeout=20000)
+
+                        flights_loaded = False
+                        no_flights_scheduled = False
+                        for _ in range(20):
+                            body_text = page.locator("body").inner_text()
                             
-                            # Single clean reload with active red-zone clicks
-                            print("🔄 Reloading search after cooldown with active red clicks...", flush=True)
-                            page.reload(wait_until="commit")
-                            reload_state = click_red_zone_while_loading(page, max_timeout=25.0)
-                            page.wait_for_timeout(800)
-                            text = page.evaluate("() => document.body ? document.body.innerText : ''")
-                            if reload_state != "SUCCESS" and ("Take a Break" in text or "Search after some time" in text):
-                                raise Exception("WAF Rate Limit Block")
+                            # --- NEW RAPID REFRESH BYPASS FOR FRONTEND ERRORS ---
+                            if "SOMETHING WENT WRONG" in body_text.upper():
+                                print("⚠️ Frontend error detected! Rapidly refreshing page to bypass...")
+                                bypass_success = False
+                                for refresh_count in range(1, 5):
+                                    print(f"🔄 Rapid reload attempt {refresh_count}...")
+                                    page.reload(wait_until="domcontentloaded")
+                                    page.wait_for_timeout(20000)  # Wait for Air India's heavy frontend
+                                    
+                                    refresh_text = page.locator("body").inner_text()
+                                    if "Flight Details" in refresh_text:
+                                        flights_loaded = True
+                                        bypass_success = True
+                                        break
+                                    elif "no flights" in refresh_text.lower() or "sorry" in refresh_text.lower():
+                                        no_flights_scheduled = True
+                                        bypass_success = True
+                                        break
+                                        
+                                if bypass_success:
+                                    break
+                                else:
+                                    raise Exception("Air India frontend error persisted after rapid reloads.")
+                            # ----------------------------------------------------
+                            
+                            if "no flights" in body_text.lower() or "sorry" in body_text.lower():
+                                no_flights_scheduled = True
+                                break
+                            if "Flight Details" in body_text:
+                                flights_loaded = True
+                                break
+                            page.wait_for_timeout(1000)
 
-                        if "We couldn't find any flights" in text:
-                            print(f"Info: Air India Express does not operate flights on {route} for T+{window}.", flush=True)
-                            with sqlite3.connect('airfare_index.db') as conn:
-                                conn.execute('''
-                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
-                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)
-                                ''', ("Air India Express", route, window, "Air India Express Direct"))
-                                conn.commit()
-                            context.close()
-                            break
-
-                        # Step 5: Extract
-                        flights = extract_flights(page, origin, dest)
-
-                        if flights:
-                            print(f"✅ Success: Air India Express {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).", flush=True)
+                        if no_flights_scheduled:
+                            print(f"Info: Air India does not operate flights on {route} for T+{window}.")
                             with sqlite3.connect('airfare_index.db') as conn:
                                 conn.execute('''
                                     CREATE TABLE IF NOT EXISTS raw_fares (
-                                        id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                                        airline TEXT, route TEXT, advance_window_days INTEGER, base_fare REAL, 
-                                        taxes_fees REAL, total_fare REAL, ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER,
+                                        base_fare REAL, taxes_fees REAL, total_fare REAL,
+                                        ota_source TEXT, departure_time TEXT, flight_no TEXT
                                     )
                                 ''')
-                                for f in flights:
-                                    conn.execute('''
-                                        INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
-                                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                                    ''', (f['airline'], f['route'], window, f['base_fare'], f['taxes_fees'], f['total_fare'], f['ota_source'], f['departure_time'], f['flight_number']))
+                                conn.execute('''
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, NULL, NULL, NULL, ?, NULL, NULL)
+                                ''', ("Air India", route, window, "Air India Direct"))
                                 conn.commit()
                             context.close()
                             break
+
+                        if not flights_loaded:
+                            raise Exception("Flight list never rendered.")
+
+                        page.wait_for_timeout(1500)
+                        flights = extract_flights(page, origin, dest)
+
+                        if flights:
+                            print(f"Success: Air India {route} | T+{window} captured {len(flights)} flights (Attempt {attempt}).")
+                            
+                            with sqlite3.connect('airfare_index.db') as conn:
+                                conn.execute('''
+                                    CREATE TABLE IF NOT EXISTS raw_fares (
+                                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                                        airline TEXT, route TEXT, advance_window_days INTEGER,
+                                        base_fare REAL, taxes_fees REAL, total_fare REAL,
+                                        ota_source TEXT, departure_time TEXT, flight_no TEXT
+                                    )
+                                ''')
+                                rows = [
+                                    (
+                                        f["airline"], f["route"], window,
+                                        f["base_fare"], f["taxes_fees"], f["total_fare"],
+                                        f["ota_source"], f["departure_time"], f["flight_number"]
+                                    )
+                                    for f in flights
+                                ]
+                                conn.executemany("""
+                                    INSERT INTO raw_fares (airline, route, advance_window_days, base_fare, taxes_fees, total_fare, ota_source, departure_time, flight_no)
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                """, rows)
+                                conn.commit()
+
+                            context.close()
+                            break
                         else:
-                            raise Exception("Zero valid flights parsed.")
+                            raise Exception("Zero valid non-stop flights parsed from card texts.")
 
                     except Exception as e:
-                        print(f"⚠️ Warning: Air India Express {route} T+{window} Attempt {attempt} failed: {e}", flush=True)
+                        print(f"Warning: Air India {route} T+{window} Attempt {attempt} failed: {e}")
                         context.close()
-                        if "WAF Rate Limit Block" in str(e):
-                            time.sleep(14)
-                        elif attempt == 1:
-                            time.sleep(4)
-
-                # Step 6: Human inter-window pause (3.5s - 5.0s) so queries aren't fired with 0ms gap
-                print("⏳ Inter-window pause (4s)...", flush=True)
-                time.sleep(random.uniform(3.5, 5.0))
+                        if attempt == 1:
+                            time.sleep(8)
 
         browser.close()
-        print("\n🎉 Air India Express Database Scraping Complete!", flush=True)
+        print("Air India Database Scraping Complete!")
 
 if __name__ == "__main__":
-    run_airindia_express_scraper()
+    run_airindia_scraper()
