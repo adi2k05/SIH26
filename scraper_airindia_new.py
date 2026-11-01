@@ -58,8 +58,6 @@ def extract_flights(page, origin, dest):
         if not dep_time:
             continue
 
-
-
         if origin not in lines or dest not in lines:
             continue
 
@@ -175,7 +173,9 @@ def run_airindia_scraper():
 
                         flights_loaded = False
                         no_flights_scheduled = False
-                        for _ in range(20):
+                        
+                        # Increased wait loop from 20 to 60 iterations for slow loading times
+                        for _ in range(60):
                             body_text = page.locator("body").inner_text()
                             
                             # --- NEW RAPID REFRESH BYPASS FOR FRONTEND ERRORS ---
