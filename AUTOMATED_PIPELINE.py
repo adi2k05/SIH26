@@ -135,7 +135,7 @@ def run_pipeline():
         "scraper_akasa.py",
         "scraper_ct.py",
         "scraper_ixigo.py",
-        "scraper_airindia_express.py"
+        "scraper_airindiaexp_new.py"
 
     ]
 
