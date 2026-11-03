@@ -7,32 +7,36 @@ import glob
 st.set_page_config(page_title="MoSPI APIx Dashboard", layout="wide", page_icon="✈️")
 st.title("✈️ Real-time Airfare Price Index (APIx)")
 
-@st.cache_data(ttl=30)
+# 1. CACHE OPTIMIZATION: Increased TTL to 10 minutes (600s) to prevent constant disk reads.
+@st.cache_data(ttl=600, show_spinner=False)
 def load_data():
     all_data = []
-    # Find main and all split historical databases dynamically
     db_files = glob.glob('*airfare_index*.db')
+    
+    # 2. MEMORY OPTIMIZATION: Explicitly select only the columns the dashboard uses.
+    target_columns = "timestamp, route, advance_window_days, airline, ota_source, base_fare, taxes_fees, total_fare, departure_time"
     
     for db in db_files:
         with sqlite3.connect(db) as conn:
             try:
-                df_part = pd.read_sql_query("SELECT * FROM raw_fares", conn)
+                df_part = pd.read_sql_query(f"SELECT {target_columns} FROM raw_fares", conn)
                 all_data.append(df_part)
             except sqlite3.OperationalError:
-                pass # Skip if a database file exists but has no raw_fares table yet
+                pass
 
     if not all_data:
         return pd.DataFrame()
 
-    # Merge all dataframes together into memory for the dashboard
     df = pd.concat(all_data, ignore_index=True)
 
     if not df.empty and 'timestamp' in df.columns:
-        # Convert UTC to IST (+5:30)
         df['timestamp_ist'] = pd.to_datetime(df['timestamp'], utc=True).dt.tz_convert('Asia/Kolkata').dt.strftime('%Y-%m-%d %I:%M %p')
+        
     return df
 
-df = load_data()
+# 3. UX OPTIMIZATION: Explicit spinner hides the background loading delay.
+with st.spinner("Aggregating historical airfare databases..."):
+    df = load_data()
 
 if df.empty:
     st.warning("⚠️ No records found in any 'airfare_index.db' files. Run the scrapers to populate the database.")
@@ -62,14 +66,12 @@ with tab_analytics:
     sub = df[(df['route'] == selected_route) & (df['advance_window_days'] == selected_window)]
     
     if not sub.empty:
-        # KPI Row
         lowest_row = sub.loc[sub['total_fare'].idxmin()]
         c1, c2, c3 = st.columns(3)
         c1.metric("Cheapest Fare", f"₹{int(lowest_row['total_fare']):,}", f"{lowest_row['airline']} via {lowest_row['ota_source']}")
         c2.metric("Median Sector Fare", f"₹{int(sub['total_fare'].median()):,}")
         c3.metric("Max Sector Fare", f"₹{int(sub['total_fare'].max()):,}")
         
-        # Charts
         col_left, col_right = st.columns(2)
         
         agg = sub.groupby(['airline', 'ota_source'])['total_fare'].mean().reset_index()
