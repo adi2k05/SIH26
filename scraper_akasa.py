@@ -88,6 +88,7 @@ def run_akasa_scraper():
                         page.wait_for_timeout(500)
                         page.keyboard.press("Control+A")
                         page.keyboard.press("Backspace")
+                        page.wait_for_timeout(500)
                         page.keyboard.type(origin, delay=150)
                         page.wait_for_timeout(2500)
                         
