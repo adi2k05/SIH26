@@ -59,32 +59,102 @@ def perform_ui_warmup(driver, wait, origin, dest, target_date):
 
     from_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="fromCity"]')))
     ActionChains(driver).move_to_element(from_label).click().perform()
-    time.sleep(1)
+    time.sleep(1.5)
+    
     from_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input.react-autosuggest__input')))
     from_input.send_keys(origin)
-    time.sleep(2) 
-    driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) opt.click();")
-    time.sleep(1)
+    time.sleep(2.5) 
+    
+    driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) { opt.click(); }")
+    time.sleep(1.5)
 
     try:
         to_input = driver.find_element(By.CSS_SELECTOR, 'input.react-autosuggest__input')
     except:
         to_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="toCity"]')))
         ActionChains(driver).move_to_element(to_label).click().perform()
-        time.sleep(1)
+        time.sleep(1.5)
         to_input = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'input.react-autosuggest__input')))
     
     to_input.send_keys(dest)
-    time.sleep(2)
-    driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) opt.click();")
-    time.sleep(1)
+    time.sleep(2.5)
+    driver.execute_script("let opt = document.querySelector('li[role=\"option\"]'); if(opt) { opt.click(); }")
+    time.sleep(1.5)
 
+    target_month_short = target_date.strftime("%b")[:3]
+    target_month_full = target_date.strftime("%B")
+    target_day_zero = f"{target_date.day:02d}"
+    target_year = str(target_date.year)
+    
+    print(f"Selecting date: {target_month_short} {target_day_zero}, {target_year}...")
+    
+    js_click_date = f"""
+        let cells = document.querySelectorAll('.DayPicker-Day');
+        for (let c of cells) {{
+            let aria = c.getAttribute('aria-label');
+            if (aria) {{
+                let parts = aria.split(' '); 
+                if (parts.length >= 4) {{
+                    let cMonth = parts[1].substring(0,3); 
+                    let cDay = parts[2];
+                    let cYear = parts[3];
+                    
+                    if (cMonth === '{target_month_short}' && cYear === '{target_year}') {{
+                        if (cDay === '{target_day_zero}' || cDay === parseInt('{target_day_zero}').toString()) {{
+                            if (c.getAttribute('aria-disabled') === 'true') return false;
+                            let inner = c.querySelector('.dateInnerCell') || c;
+                            inner.click();
+                            return true;
+                        }}
+                    }}
+                }}
+            }}
+        }}
+        return false;
+    """
+
+    js_navigate_calendar = f"""
+        let targetTime = new Date('{target_month_full} 1, {target_year}').getTime();
+        let captions = document.querySelectorAll('.DayPicker-Caption > div');
+        
+        if (captions.length > 0) {{
+            let visibleStr = captions[0].innerText.replace(/[^a-zA-Z0-9 ]/g, '').trim();
+            let visibleTime = new Date(visibleStr.replace(' ', ' 1, ')).getTime();
+            
+            if (!isNaN(visibleTime) && targetTime < visibleTime) {{
+                let prevBtn = document.querySelector('span[aria-label="Previous Month"], .DayPicker-NavButton--prev');
+                if (prevBtn && prevBtn.getAttribute('aria-disabled') !== 'true') {{
+                    prevBtn.click();
+                    return;
+                }}
+            }}
+        }}
+        
+        let nextBtn = document.querySelector('span[aria-label="Next Month"], .DayPicker-NavButton--next'); 
+        if (nextBtn) nextBtn.click();
+    """
+    
+    if not driver.execute_script(js_click_date):
+        try:
+            departure_label = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'label[for="departure"]')))
+            ActionChains(driver).move_to_element(departure_label).click().perform()
+            time.sleep(1.5)
+        except:
+            pass
+        
+        for _ in range(12):
+            if driver.execute_script(js_click_date):
+                break
+            driver.execute_script(js_navigate_calendar)
+            time.sleep(0.8)
+            
+    time.sleep(1.5)
+    print("Submitting search via DOM mapped selectors...")
     search_btn = wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button.widgetSearchBtn, a.widgetSearchBtn, p[data-cy="submit"] button, p[data-cy="submit"] a')))
     ActionChains(driver).move_to_element(search_btn).click().perform()
     time.sleep(4)
 
 def extract_flights_from_dom(driver, origin, dest):
-    """Executes the JS block to extract currently visible flights"""
     js_extract = f"""
         let results = [];
         let cards = document.querySelectorAll('.listingCard, .listingCardWrap, div[class*="listingCard"]');
@@ -144,7 +214,7 @@ def extract_flights_from_dom(driver, origin, dest):
     """
     
     extracted_dict = {}
-    for scroll_attempt in range(20):
+    for scroll_attempt in range(25):
         current_flights = driver.execute_script(js_extract)
         for f in current_flights:
             uniq_key = f"{f['flight_number']}_{f['departure_time']}_{f['total_fare']}"
@@ -166,33 +236,41 @@ def extract_flights_from_dom(driver, origin, dest):
 
 def apply_stop_filter(driver, target_stop):
     """
-    Clears all active stop filters, then specifically clicks the target filter (e.g. 'Non Stop' or '1 Stop')
+    Clears all active stop filters using MMT's new 'filterPill' DOM structure,
+    then specifically clicks the target filter ('Non Stop' or '1 Stop')
     """
-    driver.execute_script(f"""
-        // 1. Clear any active 'applied' chips at the top of the screen
-        let activeChips = Array.from(document.querySelectorAll('.appliedFilter .close, .appliedFilter svg, div[class*="appliedFilter"]'));
-        activeChips.forEach(btn => btn.click());
-        
-        // 2. Identify the left sidebar pills
-        let pills = Array.from(document.querySelectorAll('.filterPill'));
-        
-        // 3. Uncheck all stop filters to reset the board
-        pills.forEach(p => {{
-            if ((p.innerText.includes('Non Stop') || p.innerText.includes('1 Stop')) && p.className.includes('Active')) {{
-                p.click();
-            }}
-        }});
+    # 1. Clear any currently active filters
+    driver.execute_script("""
+        // Attempt to click the 'Clear All' button in the Applied Filters section
+        let clearBtns = Array.from(document.querySelectorAll('*')).filter(el => el.innerText === 'Clear All' && el.tagName !== 'SCRIPT' && el.children.length === 0);
+        if (clearBtns.length > 0) {
+            clearBtns[0].click();
+        } else {
+            // Fallback: Manually click any active stop pills to toggle them off
+            let activePills = document.querySelectorAll('.filterPillActive');
+            activePills.forEach(pill => {
+                if (pill.innerText && (pill.innerText.includes('Non Stop') || pill.innerText.includes('1 Stop'))) {
+                    pill.click();
+                }
+            });
+        }
     """)
-    time.sleep(2) # Wait for DOM to reset
+    time.sleep(2.5) # Wait for flights to reset
     
+    # 2. Apply the specific target filter
     driver.execute_script(f"""
-        let pills = Array.from(document.querySelectorAll('.filterPill'));
-        let targetPill = pills.find(p => p.innerText.includes('{target_stop}'));
-        if (targetPill && !targetPill.className.includes('Active')) {{
-            targetPill.click();
+        let pills = document.querySelectorAll('.filterPill');
+        for (let pill of pills) {{
+            if (pill.innerText && pill.innerText.includes('{target_stop}')) {{
+                // Only click if it's not already active
+                if (!pill.classList.contains('filterPillActive')) {{
+                    pill.click();
+                }}
+                break;
+            }}
         }}
     """)
-    time.sleep(4) # Wait for network request to fetch new filtered flights
+    time.sleep(4) # Wait for filtered network response to load
 
 def run_test():
     # TEST CONFIGURATION
@@ -201,7 +279,7 @@ def run_test():
         ("BLR", "BOM", 7)
     ]
 
-    print("Launching MakeMyTrip Filter Test...")
+    print("Launching MakeMyTrip Filter Test (Pill Architecture Update)...")
     user_data_dir = os.path.join(os.getcwd(), "mmt_browser_profile")
     
     options = uc.ChromeOptions()
@@ -237,7 +315,7 @@ def run_test():
             all_collected_flights = []
             
             # --- PHASE 1: NON-STOP FLIGHTS ---
-            print("\n🔄 Phase 1: Applying 'Non Stop' filter...")
+            print("\n🔄 Phase 1: Applying 'Non Stop' filter via filter pills...")
             apply_stop_filter(driver, 'Non Stop')
             print("📜 Scrolling and extracting Non-Stop flights...")
             non_stop_flights = extract_flights_from_dom(driver, origin, dest)
@@ -249,7 +327,7 @@ def run_test():
             time.sleep(1)
             
             # --- PHASE 2: 1-STOP FLIGHTS ---
-            print("\n🔄 Phase 2: Applying '1 Stop' filter...")
+            print("\n🔄 Phase 2: Applying '1 Stop' filter via filter pills...")
             apply_stop_filter(driver, '1 Stop')
             print("📜 Scrolling and extracting 1-Stop flights...")
             one_stop_flights = extract_flights_from_dom(driver, origin, dest)
