@@ -51,7 +51,8 @@ def is_already_scraped(route, window, source):
             c.execute("""
                 SELECT COUNT(*) FROM raw_fares 
                 WHERE route = ? AND advance_window_days = ? AND ota_source = ? 
-                AND date(timestamp) = date(datetime('now', '+5 hours', '+30 minutes'))
+                AND total_fare IS NOT NULL
+                AND date(datetime(timestamp, '+5 hours', '+30 minutes')) = date(datetime('now', '+5 hours', '+30 minutes'))
             """, (route, window, source))
             return c.fetchone()[0] > 0
         except sqlite3.OperationalError:
@@ -168,8 +169,15 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
     try:
         # Wait for either valid cards OR the 'X' airplane soft-block image
         page.wait_for_selector("div[class*='fare-accordion'], div[class*='srp__search-result'], div[class*='flight-card'], img[alt='no flight found']", timeout=45000)
-    except:
-        pass
+    except Exception:
+        try:
+            page_text = page.locator("body").inner_text().lower()
+        except Exception:
+            page_text = ""
+        if "we are unable to find flights" in page_text:
+            print(f"ℹ️ IndiGo officially returned no flights for T+{window_days}. Logging NULL.")
+            return "EMPTY"
+        raise SoftBlockException("Timed out waiting for IndiGo results (hang or undetected WAF block).")
         
     time.sleep(3)
 
@@ -190,7 +198,7 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
         
         if (cards.length === 0) {{
             let allDivs = document.querySelectorAll('div');
-            cards = Array.from(allDivs).filter(d => /6E[-\\s]?\\d{{3,4}}/i.test(d.innerText) && d.innerText.includes('₹'));
+            cards = Array.from(allDivs).filter(d => (d.innerText || "").length < 600 && /6E[-\\s]?\\d{{3,4}}/i.test(d.innerText) && (d.innerText.includes('₹') || d.innerText.includes('Rs')));
         }}
 
         cards.forEach(card => {{
@@ -261,7 +269,7 @@ def scrape_indigo_route(page, origin: str, dest: str, window_days: int):
 
     flight_list = list(unique_flights.values())
     if not flight_list:
-        return "EMPTY"
+        raise RuntimeError("Zero valid flights extracted (DOM render failure or undetected block).")
         
     print(f"✅ Extracted {len(flight_list)} direct IndiGo flights!")
     return flight_list
@@ -347,7 +355,7 @@ def run_indigo_pipeline():
                                 
                         except SoftBlockException as e:
                             # --- PURGE PROFILE ON SOFT BLOCK ---
-                            print(f"🛡️ Soft block detected (Attempt {attempt})! Engaging defense protocols (Clearing Profile)...")
+                            print(f"🛡️ Soft block detected (Attempt {attempt}): {e} Engaging defense protocols (Clearing Profile)...")
                             context.close()
                             time.sleep(3) # Ensure OS releases the directory lock
                             reset_profile_directory(user_data_dir)
